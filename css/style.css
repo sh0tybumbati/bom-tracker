@@ -470,6 +470,133 @@ textarea { resize: vertical; min-height: 70px; }
   display: none;
 }
 
+/* ── Filter bar ── */
+#filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+#filter-bar select, #filter-bar input {
+  width: auto;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+/* ── Spec chips (item card) ── */
+.spec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.spec-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.spec-chip strong { color: var(--accent); }
+
+/* ── Compat row (item card) ── */
+.compat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.compat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 0.72rem;
+  background: #00000020;
+  cursor: default;
+}
+
+/* ── Spec fields in item modal ── */
+.modal-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 16px 0 8px;
+}
+
+.spec-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  min-height: 34px;
+}
+
+.spec-field-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  min-width: 130px;
+  flex-shrink: 0;
+}
+
+.spec-unit {
+  font-size: 0.7rem;
+  color: var(--accent);
+  margin-left: 3px;
+}
+
+.spec-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.spec-range-inputs input, .spec-field-row > input {
+  width: 90px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+}
+
+.range-dash { color: var(--text-muted); font-size: 0.85rem; }
+
+/* ── Spec manager modal ── */
+.spec-mgr-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.spec-mgr-name { font-size: 0.875rem; font-weight: 600; }
+.spec-mgr-meta { font-size: 0.75rem; color: var(--text-muted); }
+
+/* ── Linked parts checkboxes ── */
+.linked-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.linked-checkbox input { width: auto; cursor: pointer; accent-color: var(--accent); }
+
 /* ── No BOM selected ── */
 #no-bom {
   flex: 1;
