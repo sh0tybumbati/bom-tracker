@@ -116,6 +116,7 @@ body {
 }
 
 #new-bom-btn {
+  flex-shrink: 0;
   margin: 8px;
   padding: 10px;
   background: var(--accent);
