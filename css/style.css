@@ -56,6 +56,29 @@ body {
   color: var(--text-muted);
 }
 
+#currency-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#currency-select {
+  flex: 1;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+
+#rates-status {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 #bom-list {
   flex: 1;
   overflow-y: auto;

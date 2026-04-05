@@ -1,3 +1,92 @@
+// ── Currency ──────────────────────────────────────────────────────────────────
+
+const CURRENCY_SYMBOLS = {
+  USD:'$', EUR:'€', GBP:'£', PHP:'₱', SGD:'S$', MYR:'RM ',
+  THB:'฿', JPY:'¥', CNY:'¥', AUD:'A$', KRW:'₩', INR:'₹',
+  HKD:'HK$', IDR:'Rp ', VND:'₫', NZD:'NZ$', CAD:'C$', CHF:'Fr ',
+};
+
+const POPULAR_CURRENCIES = ['USD','PHP','EUR','GBP','SGD','MYR','THB','AUD','JPY','CNY','INR','HKD','IDR','CAD'];
+
+const RATES_CACHE_KEY = 'bom-rates-v1';
+const RATES_TTL = 60 * 60 * 1000; // 1 hour
+
+let ratesCache = null; // { rates: { PHP: 56.1, EUR: 0.92, ... }, fetchedAt }
+
+async function fetchRates() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(RATES_CACHE_KEY));
+    if (cached && Date.now() - cached.fetchedAt < RATES_TTL) {
+      ratesCache = cached; updateRatesStatus(); return;
+    }
+  } catch {}
+  updateRatesStatus('Fetching rates…');
+  try {
+    const res = await fetch('https://api.frankfurter.app/latest?from=USD');
+    if (!res.ok) throw new Error('fetch failed');
+    const json = await res.json();
+    ratesCache = { rates: { ...json.rates, USD: 1 }, fetchedAt: Date.now() };
+    localStorage.setItem(RATES_CACHE_KEY, JSON.stringify(ratesCache));
+    updateRatesStatus();
+    renderAll(); // re-render with fresh rates
+  } catch {
+    try {
+      const cached = JSON.parse(localStorage.getItem(RATES_CACHE_KEY));
+      if (cached) { ratesCache = cached; updateRatesStatus('(offline — using cached rates)'); renderAll(); return; }
+    } catch {}
+    updateRatesStatus('Rates unavailable');
+  }
+}
+
+function updateRatesStatus(msg) {
+  const el = document.getElementById('rates-status');
+  if (!el) return;
+  if (msg) { el.textContent = msg; return; }
+  if (ratesCache) {
+    const age = Math.round((Date.now() - ratesCache.fetchedAt) / 60000);
+    el.textContent = `Rates: ${age < 1 ? 'just updated' : age + 'm ago'}`;
+  }
+}
+
+function getDisplayCurrency() { return data.displayCurrency || 'USD'; }
+
+function symOf(code) { return CURRENCY_SYMBOLS[code] || (code + ' '); }
+
+// Reverse: symbol string → currency code (best guess)
+const SYM_TO_CODE = Object.fromEntries(
+  Object.entries(CURRENCY_SYMBOLS).map(([code, sym]) => [sym.trim(), code])
+);
+function codeOfSym(sym) {
+  if (!sym) return 'USD';
+  const t = sym.trim();
+  return SYM_TO_CODE[t] || (() => {
+    // Try partial match — e.g. user typed 'S$' or 'RM'
+    for (const [code, s] of Object.entries(CURRENCY_SYMBOLS)) {
+      if (s.trim() === t) return code;
+    }
+    return null; // unknown symbol, can't convert
+  })();
+}
+
+// Convert amount from one currency to display currency.
+// Returns { amount, symbol, converted, originalAmount, originalSymbol }
+function toDisplay(amount, fromCurrency) {
+  const to = getDisplayCurrency();
+  const from = (fromCurrency || 'USD').toUpperCase();
+  if (from === to || !ratesCache) {
+    return { amount, symbol: symOf(to), converted: false };
+  }
+  const rF = ratesCache.rates[from], rT = ratesCache.rates[to];
+  if (!rF || !rT) return { amount, symbol: symOf(to), converted: false };
+  return {
+    amount: amount / rF * rT,
+    symbol: symOf(to),
+    converted: true,
+    originalAmount: amount,
+    originalSymbol: symOf(from),
+  };
+}
+
 // ── Storage ───────────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'bom-tracker-data';
@@ -341,7 +430,17 @@ function renderItemCard(item, bom) {
     if (!d?.url) return '';
     const isCheap = cheapest?.platform === p ? ' cheapest' : '';
     const label = { amazon: '🟠 Amazon', lazada: '🔵 Lazada', aliexpress: '🔴 AliExpress' }[p];
-    const priceStr = d.price ? ` · ${d.currency || '$'}${d.price}` : '';
+    let priceStr = '';
+    if (d.price) {
+      const sym = d.currency || '$';
+      const fromCode = codeOfSym(sym);
+      const conv = fromCode ? toDisplay(parseFloat(d.price), fromCode) : null;
+      if (conv && conv.converted) {
+        priceStr = ` · ${conv.symbol}${conv.amount.toFixed(2)} <small style="opacity:.6">(${sym}${d.price})</small>`;
+      } else {
+        priceStr = ` · ${sym}${d.price}`;
+      }
+    }
     return `<a class="platform-btn ${p}${isCheap}" href="${esc(d.url)}" target="_blank" rel="noopener">${label}${priceStr}</a>`;
   }).join('');
 
@@ -363,9 +462,19 @@ function renderItemCard(item, bom) {
     </div>`;
   }).join('');
 
-  const bestPriceHtml = cheapest
-    ? `<div class="item-best-price">${cheapest.currency}${cheapest.price}</div><div class="item-best-price-label">best price</div>`
-    : `<div class="item-best-price" style="color:var(--text-muted)">—</div>`;
+  let bestPriceHtml;
+  if (cheapest) {
+    const sym = cheapest.currency;
+    const fromCode = codeOfSym(sym);
+    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    if (conv && conv.converted) {
+      bestPriceHtml = `<div class="item-best-price">${conv.symbol}${conv.amount.toFixed(2)}</div><div class="item-best-price-label">best · <span style="opacity:.6">${sym}${cheapest.price}</span></div>`;
+    } else {
+      bestPriceHtml = `<div class="item-best-price">${sym}${cheapest.price}</div><div class="item-best-price-label">best price</div>`;
+    }
+  } else {
+    bestPriceHtml = `<div class="item-best-price" style="color:var(--text-muted)">—</div>`;
+  }
 
   return `
     <div class="item-card">
@@ -804,16 +913,25 @@ function getPrices(item) {
 }
 
 function calcBomTotal(bom) {
-  let total = 0, currency = '$', mixed = false;
+  const dc = getDisplayCurrency();
+  let total = 0, hasAny = false, hasUnconverted = false;
   for (const item of bom.items) {
     const prices = getPrices(item);
     if (!prices.length) continue;
     const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
-    if (currency === '$') currency = cheapest.currency;
-    else if (currency !== cheapest.currency) mixed = true;
-    total += cheapest.price * (item.quantity || 1);
+    hasAny = true;
+    const fromCode = codeOfSym(cheapest.currency);
+    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    if (conv) {
+      total += conv.amount * (item.quantity || 1);
+    } else {
+      // Unknown currency — add raw, flag as mixed
+      total += cheapest.price * (item.quantity || 1);
+      hasUnconverted = true;
+    }
   }
-  return total === 0 ? 'No prices' : (mixed ? '~' : '') + currency + total.toFixed(2);
+  if (!hasAny) return 'No prices';
+  return (hasUnconverted ? '~' : '') + symOf(dc) + total.toFixed(2);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -899,7 +1017,24 @@ function renderAll() { renderSidebar(); renderBomHeader(); }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+// Populate currency selector
+const currencySelect = document.getElementById('currency-select');
+POPULAR_CURRENCIES.forEach(code => {
+  const opt = document.createElement('option');
+  opt.value = code;
+  opt.textContent = `${symOf(code).trim()} ${code}`;
+  if (code === getDisplayCurrency()) opt.selected = true;
+  currencySelect.appendChild(opt);
+});
+currencySelect.addEventListener('change', () => {
+  data.displayCurrency = currencySelect.value;
+  saveData(data);
+  renderAll();
+  updateRatesStatus();
+});
+
 document.getElementById('new-bom-btn').addEventListener('click', () => openBomModal());
 if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
 checkShareParam();
+fetchRates();
