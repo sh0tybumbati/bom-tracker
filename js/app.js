@@ -21,18 +21,41 @@ async function fetchRates() {
     }
   } catch {}
   updateRatesStatus('Fetching rates…');
-  try {
+
+  async function tryFrankfurter() {
     const res = await fetch('https://api.frankfurter.app/latest?from=USD');
-    if (!res.ok) throw new Error('fetch failed');
+    if (!res.ok) throw new Error(`frankfurter ${res.status}`);
     const json = await res.json();
-    ratesCache = { rates: { ...json.rates, USD: 1 }, fetchedAt: Date.now() };
+    return { ...json.rates, USD: 1 };
+  }
+
+  async function tryFawazahmed() {
+    const res = await fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json');
+    if (!res.ok) throw new Error(`fawazahmed ${res.status}`);
+    const json = await res.json();
+    // rates are under json.usd, all lowercase keys
+    const raw = json.usd;
+    const rates = { USD: 1 };
+    for (const [k, v] of Object.entries(raw)) rates[k.toUpperCase()] = v;
+    return rates;
+  }
+
+  try {
+    let rates;
+    try { rates = await tryFrankfurter(); }
+    catch (e1) {
+      console.warn('Frankfurter failed:', e1.message, '— trying fallback…');
+      rates = await tryFawazahmed();
+    }
+    ratesCache = { rates, fetchedAt: Date.now() };
     localStorage.setItem(RATES_CACHE_KEY, JSON.stringify(ratesCache));
     updateRatesStatus();
-    renderAll(); // re-render with fresh rates
-  } catch {
+    renderAll();
+  } catch (e) {
+    console.error('All rate sources failed:', e);
     try {
       const cached = JSON.parse(localStorage.getItem(RATES_CACHE_KEY));
-      if (cached) { ratesCache = cached; updateRatesStatus('(offline — using cached rates)'); renderAll(); return; }
+      if (cached) { ratesCache = cached; updateRatesStatus('(offline — cached)'); renderAll(); return; }
     } catch {}
     updateRatesStatus('Rates unavailable');
   }
