@@ -243,6 +243,7 @@ function renderBomHeader() {
       <button class="header-btn primary" id="add-item-btn">+ Add Item</button>
       <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
       <button class="header-btn" id="export-csv-btn">Export CSV</button>
+      <button class="header-btn" id="share-bom-btn">🔗 Share</button>
       <button class="header-btn danger" id="delete-bom-btn">Delete</button>
     </div>
     <div id="filter-bar">
@@ -270,6 +271,7 @@ function renderBomHeader() {
   document.getElementById('add-item-btn').addEventListener('click', () => openItemModal(null));
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
+  document.getElementById('share-bom-btn').addEventListener('click', shareBom);
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
 
   document.getElementById('filter-field').addEventListener('change', e => {
@@ -820,6 +822,77 @@ function esc(str) {
   return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ── Share / Import ────────────────────────────────────────────────────────────
+
+function shareBom() {
+  const bom = getActiveBom();
+  if (!bom) return;
+  try {
+    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(bom));
+    const url = `${location.origin}${location.pathname}#share=${compressed}`;
+    navigator.clipboard.writeText(url).then(() => {
+      showToast('Share link copied to clipboard!');
+    }).catch(() => {
+      // Fallback: show in a prompt so they can copy manually
+      prompt('Copy this link:', url);
+    });
+  } catch (e) {
+    alert('Failed to generate share link.');
+  }
+}
+
+function checkShareParam() {
+  const hash = location.hash;
+  if (!hash.startsWith('#share=')) return;
+  const compressed = hash.slice(7);
+  try {
+    const bom = JSON.parse(LZString.decompressFromEncodedURIComponent(compressed));
+    if (!bom?.name) return;
+
+    // Check if already imported
+    const exists = data.boms.find(b => b.name === bom.name);
+    const suffix = exists ? ` (already have "${bom.name}" — will import as copy)` : '';
+
+    if (!confirm(`Import shared BOM: "${bom.name}"?${suffix}\n\n${bom.items.length} item(s)`)) {
+      history.replaceState(null, '', location.pathname);
+      return;
+    }
+
+    // Re-assign IDs to avoid collisions
+    const idMap = {};
+    bom.id = uuid();
+    bom.items.forEach(item => {
+      const oldId = item.id;
+      item.id = uuid();
+      idMap[oldId] = item.id;
+      item.linkedParts = [];
+    });
+    // Re-wire linked parts using new IDs
+    bom.items.forEach(item => {
+      item.linkedParts = (item.linkedParts || []).map(oldId => idMap[oldId]).filter(Boolean);
+    });
+
+    data.boms.push(bom);
+    activeBomId = bom.id;
+    saveData(data);
+    history.replaceState(null, '', location.pathname);
+    renderAll();
+    showToast(`Imported "${bom.name}"`);
+  } catch (e) {
+    console.error('Failed to import shared BOM', e);
+    history.replaceState(null, '', location.pathname);
+  }
+}
+
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add('toast-show'), 10);
+  setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3000);
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function renderAll() { renderSidebar(); renderBomHeader(); }
@@ -829,3 +902,4 @@ function renderAll() { renderSidebar(); renderBomHeader(); }
 document.getElementById('new-bom-btn').addEventListener('click', () => openBomModal());
 if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
+checkShareParam();
