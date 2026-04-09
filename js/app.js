@@ -1424,24 +1424,75 @@ function deleteBom() {
 
 function exportCSV() {
   const bom = getActiveBom();
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const row = cols => cols.map(q).join(',');
+  const blank = () => '';
+  const sections = [];
+
+  // ── Items ──
   const specHeaders = data.specFields.map(f => `${f.name} (${f.unit || f.type})`);
-  const rows = [['Name', 'Qty', 'Notes', 'Image URL', ...specHeaders, 'Amazon URL', 'Amazon Price', 'Amazon Currency', 'Lazada URL', 'Lazada Price', 'Lazada Currency', 'AliExpress URL', 'AliExpress Price', 'AliExpress Currency', 'Best Price', 'Linked Parts']];
+  sections.push(row(['ITEMS']));
+  sections.push(row(['Name', 'Qty', 'Status', 'Covered By Bundle', 'Notes', 'Image URL',
+    ...specHeaders,
+    'Amazon URL', 'Amazon Price', 'Amazon Currency',
+    'Lazada URL', 'Lazada Price', 'Lazada Currency',
+    'AliExpress URL', 'AliExpress Price', 'AliExpress Currency',
+    'Best Price', 'Linked Parts']));
+
   for (const item of bom.items) {
     const prices = getPrices(item);
     const cheapest = prices.length ? prices.reduce((a, b) => a.price < b.price ? a : b) : null;
     const p = item.platforms || {};
     const specValues = data.specFields.map(f => formatSpec(item.specs?.[f.id], f));
     const linkedNames = (item.linkedParts || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
-    rows.push([item.name, item.quantity || 1, item.specsNotes || '', item.imageUrl || '',
+    const bundle = coveredByBundle(item.id, bom);
+    sections.push(row([
+      item.name, item.quantity || 1,
+      STATUS_LABEL[item.status || 'needed'] || item.status || '',
+      bundle ? bundle.name : '',
+      item.specsNotes || '', item.imageUrl || '',
       ...specValues,
       p.amazon?.url || '', p.amazon?.price || '', p.amazon?.currency || '',
       p.lazada?.url || '', p.lazada?.price || '', p.lazada?.currency || '',
       p.aliexpress?.url || '', p.aliexpress?.price || '', p.aliexpress?.currency || '',
       cheapest ? `${cheapest.currency}${cheapest.price}` : '',
       linkedNames,
-    ]);
+    ]));
   }
-  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+
+  // ── Bundles ──
+  if (bom.bundles?.length) {
+    sections.push('');
+    sections.push(row(['BUNDLES (Current BOM)']));
+    sections.push(row(['Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
+    for (const b of bom.bundles) {
+      const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
+      sections.push(row([b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
+    }
+  }
+
+  // ── Proposals ──
+  if (bom.proposals?.length) {
+    sections.push('');
+    sections.push(row(['PROPOSALS']));
+    for (const prop of bom.proposals) {
+      sections.push('');
+      sections.push(row([`Proposal: ${prop.name}`, prop.description || '']));
+      const t = calcProposalTotal(bom, prop.bundles || []);
+      sections.push(row(['Total', t ? t.display : 'No prices']));
+      if (prop.bundles?.length) {
+        sections.push(row(['  Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
+        for (const b of prop.bundles) {
+          const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
+          sections.push(row(['  ' + b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
+        }
+      } else {
+        sections.push(row(['  (no bundles — all items at individual prices)']));
+      }
+    }
+  }
+
+  const csv = sections.join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   a.download = `${bom.name.replace(/[^a-z0-9]/gi, '_')}_BOM.csv`;
@@ -1532,7 +1583,14 @@ function checkShareParam() {
     const exists = data.boms.find(b => b.name === bom.name);
     const suffix = exists ? ` (already have "${bom.name}" — will import as copy)` : '';
 
-    if (!confirm(`Import shared BOM: "${bom.name}"?${suffix}\n\n${bom.items.length} item(s)`)) {
+    const bundleCount = (bom.bundles || []).length;
+    const propCount = (bom.proposals || []).length;
+    const details = [
+      `${bom.items.length} item(s)`,
+      bundleCount ? `${bundleCount} bundle(s)` : '',
+      propCount ? `${propCount} proposal(s)` : '',
+    ].filter(Boolean).join(', ');
+    if (!confirm(`Import shared BOM: "${bom.name}"?${suffix}\n\n${details}`)) {
       history.replaceState(null, '', location.pathname);
       return;
     }
@@ -1544,12 +1602,18 @@ function checkShareParam() {
       const oldId = item.id;
       item.id = uuid();
       idMap[oldId] = item.id;
-      item.linkedParts = [];
     });
-    // Re-wire linked parts using new IDs
-    bom.items.forEach(item => {
-      item.linkedParts = (item.linkedParts || []).map(oldId => idMap[oldId]).filter(Boolean);
-    });
+
+    // Re-wire item references using new IDs
+    const remapIds = ids => (ids || []).map(old => idMap[old]).filter(Boolean);
+    bom.items.forEach(item => { item.linkedParts = remapIds(item.linkedParts); });
+
+    const remapBundle = b => { b.id = uuid(); b.coversItemIds = remapIds(b.coversItemIds); };
+    (bom.bundles || []).forEach(remapBundle);
+    (bom.proposals || []).forEach(p => { p.id = uuid(); (p.bundles || []).forEach(remapBundle); });
+
+    if (!bom.bundles) bom.bundles = [];
+    if (!bom.proposals) bom.proposals = [];
 
     data.boms.push(bom);
     activeBomId = bom.id;
