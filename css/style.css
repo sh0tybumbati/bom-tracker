@@ -47,10 +47,18 @@ body {
 }
 
 #sidebar-header {
-  padding: 20px 16px 14px;
+  padding: 16px 14px 14px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(160deg, #1e1830 0%, var(--surface) 100%);
   position: relative;
+}
+
+#sidebar-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 #sidebar-header::before {
@@ -151,18 +159,18 @@ body {
 
 #new-bom-btn {
   flex-shrink: 0;
-  margin: 8px;
-  padding: 10px;
+  padding: 7px 12px;
   background: linear-gradient(135deg, var(--accent), #6d59f0);
   color: #fff;
   border: none;
-  border-radius: var(--radius);
-  font-size: 0.875rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
   transition: opacity 0.15s, box-shadow 0.15s;
   font-family: inherit;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 #new-bom-btn:hover {
