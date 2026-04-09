@@ -1748,7 +1748,7 @@ function parseCSV(text) {
   return rows;
 }
 
-function importItemsFromCSV(rows) {
+function importFromCSV(rows) {
   // Find ITEMS section header row
   let headerIdx = rows.findIndex(r => r[0] === 'ITEMS');
   headerIdx = headerIdx >= 0 ? headerIdx + 1 : (rows[0]?.[0] === 'Name' ? 0 : -1);
@@ -1767,8 +1767,8 @@ function importItemsFromCSV(rows) {
   const iAliUrl    = ci('aliexpress url'), iAliPrice = ci('aliexpress price'), iAliCur = ci('aliexpress currency');
   if (iName < 0) return null;
 
-  // Detect spec field columns: headers matching existing spec field names
-  const specColMap = []; // { fieldId, colIdx }
+  // Detect spec field columns
+  const specColMap = [];
   data.specFields.forEach(f => {
     const idx = header.findIndex(h => h.toLowerCase().startsWith(f.name.toLowerCase()));
     if (idx >= 0) specColMap.push({ field: f, colIdx: idx });
@@ -1778,18 +1778,16 @@ function importItemsFromCSV(rows) {
   let endIdx = rows.length;
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const first = rows[i][0];
-    if (first === 'BUNDLES' || first === 'BUNDLES (Current BOM)' || first === 'PROPOSALS' || first === '') {
-      endIdx = i; break;
-    }
+    if (first === 'BUNDLES' || first === 'PROPOSALS' || first === '') { endIdx = i; break; }
   }
 
   const items = [];
+  const nameToId = {}; // for bundle reconstruction
   for (let i = headerIdx + 1; i < endIdx; i++) {
     const r = rows[i];
     const name = r[iName]?.trim();
     if (!name) continue;
 
-    // Parse specs
     const specs = {};
     specColMap.forEach(({ field, colIdx }) => {
       const raw = r[colIdx]?.trim();
@@ -1800,7 +1798,6 @@ function importItemsFromCSV(rows) {
         const v = parseFloat(raw);
         if (!isNaN(v)) specs[field.id] = { value: v };
       } else if (field.type === 'range') {
-        // "5–12V" or "5V" or "5"
         const rangeMatch = raw.replace(/[^\d.\-–]/g, '').match(/^([\d.]+)[–-]([\d.]+)$/);
         if (rangeMatch) specs[field.id] = { min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
         else { const v = parseFloat(raw); if (!isNaN(v)) specs[field.id] = { value: v }; }
@@ -1812,9 +1809,10 @@ function importItemsFromCSV(rows) {
                  : statusRaw.includes('stock') || statusRaw.includes('receiv') ? 'received'
                  : 'needed';
 
+    const id = uuid();
+    nameToId[name.toLowerCase()] = id;
     items.push({
-      id: uuid(),
-      name,
+      id, name,
       componentType: iType >= 0 ? r[iType]?.trim() || '' : '',
       quantity: parseInt(r[iQty]) || 1,
       status,
@@ -1829,8 +1827,39 @@ function importItemsFromCSV(rows) {
       },
     });
   }
-  return items;
+
+  // ── Parse BUNDLES section ──
+  const bundles = [];
+  const bundlesSectionIdx = rows.findIndex(r => r[0] === 'BUNDLES');
+  if (bundlesSectionIdx >= 0) {
+    const bHeader = rows[bundlesSectionIdx + 1];
+    if (bHeader) {
+      const bc = name => bHeader.findIndex(h => h.toLowerCase() === name.toLowerCase());
+      const bName = bc('name'), bPlat = bc('platform'), bPrice = bc('price'),
+            bCur  = bc('currency'), bUrl = bc('url'), bCovers = bc('covers items');
+      for (let i = bundlesSectionIdx + 2; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r[bName]?.trim()) break;
+        const coveredNames = (r[bCovers] || '').split(';').map(s => s.trim()).filter(Boolean);
+        const coversItemIds = coveredNames.map(n => nameToId[n.toLowerCase()]).filter(Boolean);
+        bundles.push({
+          id: uuid(),
+          name: r[bName].trim(),
+          platform: bPlat >= 0 ? r[bPlat]?.trim() || '' : '',
+          price: bPrice >= 0 ? r[bPrice]?.trim() || '' : '',
+          currency: bCur >= 0 ? r[bCur]?.trim() || '$' : '$',
+          url: bUrl >= 0 ? r[bUrl]?.trim() || '' : '',
+          coversItemIds,
+        });
+      }
+    }
+  }
+
+  return { items, bundles };
 }
+
+// keep old name as alias for any callers
+function importItemsFromCSV(rows) { return importFromCSV(rows); }
 
 function triggerCSVImport() {
   const input = document.createElement('input');
@@ -1842,20 +1871,22 @@ function triggerCSVImport() {
     const reader = new FileReader();
     reader.onload = e => {
       const rows = parseCSV(e.target.result);
-      const items = importItemsFromCSV(rows);
-      if (!items || !items.length) {
+      const result = importFromCSV(rows);
+      if (!result || !result.items.length) {
         alert('No items found in CSV. Make sure it was exported from BOM Tracker.');
         return;
       }
-      openCSVImportModal(items, file.name);
+      openCSVImportModal(result.items, result.bundles, file.name);
     };
     reader.readAsText(file);
   });
   input.click();
 }
 
-function openCSVImportModal(items, filename) {
+function openCSVImportModal(items, bundles, filename) {
+  bundles = bundles || [];
   const bom = getActiveBom();
+  const bundleNote = bundles.length ? ` + <strong>${bundles.length} bundle(s)</strong>` : '';
   const html = `
     <div class="modal-overlay" id="modal-overlay">
       <div class="modal" style="max-width:460px">
@@ -1865,7 +1896,7 @@ function openCSVImportModal(items, filename) {
         </div>
         <div class="modal-body">
           <p style="font-size:0.82rem;margin-bottom:14px">
-            Found <strong>${items.length} item(s)</strong> in <em>${esc(filename)}</em>.
+            Found <strong>${items.length} item(s)</strong>${bundleNote} in <em>${esc(filename)}</em>.
           </p>
           <div class="form-group">
             <label>Import into</label>
@@ -1889,11 +1920,12 @@ function openCSVImportModal(items, filename) {
           <div style="font-size:0.75rem;color:var(--text-muted);margin-top:10px;max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
             ${items.slice(0, 20).map(it => `<div style="padding:2px 0">${esc(it.componentType ? it.componentType + ' · ' : '')}${esc(it.name)} <span style="color:var(--text-muted)">×${it.quantity}</span></div>`).join('')}
             ${items.length > 20 ? `<div style="color:var(--text-muted);margin-top:4px">…and ${items.length - 20} more</div>` : ''}
+            ${bundles.length ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">${bundles.map(b => `<div style="padding:2px 0">📦 ${esc(b.name)}</div>`).join('')}</div>` : ''}
           </div>
         </div>
         <div class="modal-footer">
           <button class="header-btn" id="modal-cancel">Cancel</button>
-          <button class="header-btn primary" id="import-confirm">Import ${items.length} item(s)</button>
+          <button class="header-btn primary" id="import-confirm">Import ${items.length} item(s)${bundles.length ? ` + ${bundles.length} bundle(s)` : ''}</button>
         </div>
       </div>
     </div>`;
@@ -1923,20 +1955,47 @@ function openCSVImportModal(items, filename) {
     }
     if (!targetBom) return;
 
+    // Build name→id map for items already in target BOM + newly imported items
+    // (needed to remap bundle coversItemIds when merging into existing BOM)
+    const importedNameToId = {};
+    items.forEach(it => { importedNameToId[it.name.toLowerCase()] = it.id; });
+
     let added = 0, skipped = 0;
     for (const item of items) {
       if (skipDupes && targetBom.items.some(i => i.name.toLowerCase() === item.name.toLowerCase())) {
         skipped++;
+        // point bundle refs to the existing item's id instead
+        const existingId = targetBom.items.find(i => i.name.toLowerCase() === item.name.toLowerCase())?.id;
+        if (existingId) importedNameToId[item.name.toLowerCase()] = existingId;
         continue;
       }
       targetBom.items.push(item);
       added++;
     }
 
+    // Import bundles, remapping coversItemIds to final target IDs
+    let bundlesAdded = 0;
+    for (const b of bundles) {
+      const remapped = {
+        ...b,
+        id: uuid(),
+        coversItemIds: b.coversItemIds.map(id => {
+          // find the original item name from the parsed items list, then remap
+          const orig = items.find(it => it.id === id);
+          if (!orig) return id;
+          return importedNameToId[orig.name.toLowerCase()] || id;
+        }),
+      };
+      targetBom.bundles = targetBom.bundles || [];
+      targetBom.bundles.push(remapped);
+      bundlesAdded++;
+    }
+
     saveData(data);
     close();
     renderAll();
-    showToast(`Imported ${added} item(s)${skipped ? `, skipped ${skipped} duplicate(s)` : ''}`);
+    const bundleMsg = bundlesAdded ? `, ${bundlesAdded} bundle(s)` : '';
+    showToast(`Imported ${added} item(s)${bundleMsg}${skipped ? `, skipped ${skipped} duplicate(s)` : ''}`);
   });
 }
 
@@ -1946,13 +2005,12 @@ function exportCSV() {
   const bom = getActiveBom();
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const row = cols => cols.map(q).join(',');
-  const blank = () => '';
   const sections = [];
 
   // ── Items ──
   const specHeaders = data.specFields.map(f => `${f.name} (${f.unit || f.type})`);
   sections.push(row(['ITEMS']));
-  sections.push(row(['Name', 'Qty', 'Status', 'Covered By Bundle', 'Notes', 'Image URL',
+  sections.push(row(['Name', 'Component Type', 'Qty', 'Status', 'Notes', 'Image URL',
     ...specHeaders,
     'Amazon URL', 'Amazon Price', 'Amazon Currency',
     'Lazada URL', 'Lazada Price', 'Lazada Currency',
@@ -1965,11 +2023,9 @@ function exportCSV() {
     const p = item.platforms || {};
     const specValues = data.specFields.map(f => formatSpec(item.specs?.[f.id], f));
     const linkedNames = (item.linkedParts || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
-    const bundle = coveredByBundle(item.id, bom);
     sections.push(row([
-      item.name, item.quantity || 1,
+      item.name, item.componentType || '', item.quantity || 1,
       STATUS_LABEL[item.status || 'needed'] || item.status || '',
-      bundle ? bundle.name : '',
       item.specsNotes || '', item.imageUrl || '',
       ...specValues,
       p.amazon?.url || '', p.amazon?.price || '', p.amazon?.currency || '',
@@ -1980,43 +2036,19 @@ function exportCSV() {
     ]));
   }
 
-  const baseName = bom.name.replace(/[^a-z0-9]/gi, '_');
-
-  // Download items CSV
-  const itemsCsv = sections.join('\n');
-  downloadText(itemsCsv, `${baseName}_items.csv`, 'text/csv');
-
-  // ── Bundles + Proposals — separate file if any exist ──
-  const allBundles = [
-    ...(bom.bundles || []).map(b => ({ ...b, _source: 'Current BOM' })),
-    ...(bom.proposals || []).flatMap(p => (p.bundles || []).map(b => ({ ...b, _source: `Proposal: ${p.name}` }))),
-  ];
-
-  if (allBundles.length || bom.proposals?.length) {
-    const bSections = [];
-    bSections.push(row(['BUNDLES & PROPOSALS', bom.name]));
-    bSections.push('');
-
-    if (allBundles.length) {
-      bSections.push(row(['Source', 'Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
-      for (const b of allBundles) {
-        const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
-        bSections.push(row([b._source, b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
-      }
-      bSections.push('');
+  // ── Bundles ──
+  if ((bom.bundles || []).length) {
+    sections.push('');
+    sections.push(row(['BUNDLES']));
+    sections.push(row(['Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
+    for (const b of bom.bundles) {
+      const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
+      sections.push(row([b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
     }
-
-    if (bom.proposals?.length) {
-      bSections.push(row(['PROPOSAL TOTALS']));
-      bSections.push(row(['Proposal', 'Description', 'Bundles', 'Total']));
-      for (const prop of bom.proposals) {
-        const t = calcProposalTotal(bom, prop.bundles || [], prop.itemOverrides || {});
-        bSections.push(row([prop.name, prop.description || '', prop.bundles?.length || 0, t ? t.display : 'No prices']));
-      }
-    }
-
-    setTimeout(() => downloadText(bSections.join('\n'), `${baseName}_bundles_proposals.csv`, 'text/csv'), 300);
   }
+
+  const baseName = bom.name.replace(/[^a-z0-9]/gi, '_');
+  downloadText(sections.join('\n'), `${baseName}.csv`, 'text/csv');
 }
 
 function downloadText(text, filename, type) {
