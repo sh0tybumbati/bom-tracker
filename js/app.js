@@ -154,6 +154,10 @@ function uuid() { return Date.now().toString(36) + Math.random().toString(36).sl
 let data = loadData();
 let activeBomId = null;
 let filterState = { fieldId: '', value: '', value2: '' };
+let searchQuery = '';
+
+const STATUS_LABEL = { needed: 'Need to order', ordered: 'Ordered', received: 'In stock' };
+const STATUS_ORDER = { received: 0, ordered: 1, needed: 2 };
 
 function getActiveBom() { return data.boms.find(b => b.id === activeBomId) || null; }
 
@@ -266,6 +270,7 @@ const COMPAT_COLOR = { ok: 'var(--green)', warn: '#facc15', mismatch: '#f87171',
 // ── Filter ────────────────────────────────────────────────────────────────────
 
 function itemMatchesFilter(item) {
+  if (searchQuery && !item.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
   const { fieldId, value, value2 } = filterState;
   if (!fieldId || value === '') return true;
   const field = data.specFields.find(f => f.id === fieldId);
@@ -377,6 +382,15 @@ function renderBomHeader() {
         <button class="header-btn" id="clear-filter-btn">✕ Clear</button>
       ` : ''}
     </div>
+    <div id="items-toolbar">
+      <input type="text" id="item-search" placeholder="Search items…" value="${esc(searchQuery)}">
+      <select id="sort-select">
+        <option value="default" ${!filterState.sort || filterState.sort==='default'?'selected':''}>Order added</option>
+        <option value="name" ${filterState.sort==='name'?'selected':''}>Name A–Z</option>
+        <option value="price" ${filterState.sort==='price'?'selected':''}>Price: low–high</option>
+        <option value="status" ${filterState.sort==='status'?'selected':''}>Status</option>
+      </select>
+    </div>
     <div id="items-area"></div>`;
 
   document.getElementById('edit-bom-btn').addEventListener('click', () => openBomModal(bom));
@@ -386,8 +400,18 @@ function renderBomHeader() {
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
 
+  document.getElementById('item-search').addEventListener('input', e => {
+    searchQuery = e.target.value;
+    renderItems();
+  });
+
+  document.getElementById('sort-select').addEventListener('change', e => {
+    filterState.sort = e.target.value;
+    renderItems();
+  });
+
   document.getElementById('filter-field').addEventListener('change', e => {
-    filterState = { fieldId: e.target.value, value: '', value2: '' };
+    filterState = { fieldId: e.target.value, value: '', value2: '', sort: filterState.sort };
     renderBomHeader();
   });
 
@@ -414,7 +438,14 @@ function renderItems() {
   const area = document.getElementById('items-area');
   if (!area || !bom) return;
 
-  const filtered = bom.items.filter(itemMatchesFilter);
+  let filtered = bom.items.filter(itemMatchesFilter);
+  const sort = filterState.sort || 'default';
+  if (sort === 'name') filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  else if (sort === 'price') filtered = [...filtered].sort((a, b) => {
+    const cheapest = items => { const p = getPrices(items); return p.length ? p.reduce((x,y) => x.price < y.price ? x : y).price : Infinity; };
+    return cheapest(a) - cheapest(b);
+  });
+  else if (sort === 'status') filtered = [...filtered].sort((a, b) => (STATUS_ORDER[a.status||'needed']||2) - (STATUS_ORDER[b.status||'needed']||2));
 
   if (!bom.items.length) {
     area.innerHTML = `<div id="empty-state"><div class="icon">🔩</div><h2>No items yet</h2><p>Click "+ Add Item" to start</p></div>`;
@@ -427,6 +458,23 @@ function renderItems() {
   }
 
   area.innerHTML = filtered.map(item => renderItemCard(item, bom)).join('');
+
+  area.querySelectorAll('.qty-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const item = bom.items.find(i => i.id === btn.dataset.id);
+      if (!item) return;
+      const delta = parseInt(btn.dataset.delta);
+      item.quantity = Math.max(1, (item.quantity || 1) + delta);
+      saveData(data);
+      // Update the display without full re-render
+      const card = btn.closest('.item-card');
+      if (card) {
+        card.querySelector('.qty-val').textContent = item.quantity;
+        card.querySelector('.item-qty').textContent = `×${item.quantity}`;
+      }
+      renderSidebar(); // update totals
+    });
+  });
 
   area.querySelectorAll('.item-edit-btn').forEach(btn =>
     btn.addEventListener('click', () => {
@@ -499,21 +547,32 @@ function renderItemCard(item, bom) {
     bestPriceHtml = `<div class="item-best-price" style="color:var(--text-muted)">—</div>`;
   }
 
+  const status = item.status || 'needed';
+  const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
+
   return `
-    <div class="item-card">
+    <div class="item-card status-${status}">
       ${imgHtml}
       <div class="item-body">
         <div class="item-top">
           <div class="item-name">${esc(item.name)}</div>
-          <div class="item-qty">×${item.quantity || 1}</div>
+          <div class="item-top-right">
+            ${statusBadge}
+            <div class="item-qty">×${item.quantity || 1}</div>
+          </div>
         </div>
         ${specChips ? `<div class="spec-chips">${specChips}</div>` : ''}
         ${item.specsNotes ? `<div class="item-specs">${esc(item.specsNotes)}</div>` : ''}
-        <div class="item-links">${platformBtns || '<span style="font-size:0.75rem;color:var(--text-muted)">No links added</span>'}</div>
+        <div class="item-links">${platformBtns || '<span style="font-size:0.73rem;color:var(--text-muted)">No links added</span>'}</div>
         ${linkedHtml ? `<div class="compat-row">${linkedHtml}</div>` : ''}
       </div>
       <div class="item-actions">
         ${bestPriceHtml}
+        <div class="qty-control">
+          <button class="qty-btn" data-id="${item.id}" data-delta="-1">−</button>
+          <span class="qty-val">${item.quantity || 1}</span>
+          <button class="qty-btn" data-id="${item.id}" data-delta="1">+</button>
+        </div>
         <button class="item-edit-btn" data-id="${item.id}">Edit</button>
         <button class="item-del-btn" data-id="${item.id}">Del</button>
       </div>
@@ -631,6 +690,14 @@ function openItemModal(existing = null) {
               <label>Qty</label>
               <input type="number" id="item-qty" min="1" value="${existing?.quantity || 1}">
             </div>
+            <div class="form-group" style="max-width:130px">
+              <label>Status</label>
+              <select id="item-status">
+                <option value="needed"   ${(existing?.status||'needed')==='needed'   ? 'selected' : ''}>Need to order</option>
+                <option value="ordered"  ${existing?.status==='ordered'              ? 'selected' : ''}>Ordered</option>
+                <option value="received" ${existing?.status==='received'             ? 'selected' : ''}>In stock</option>
+              </select>
+            </div>
           </div>
 
           <div class="form-group">
@@ -746,6 +813,7 @@ function buildItemFromModal(existing) {
 
   return {
     quantity: parseInt(document.getElementById('item-qty')?.value) || 1,
+    status: document.getElementById('item-status')?.value || 'needed',
     imageUrl: document.getElementById('item-img')?.value.trim() || '',
     specs,
     specsNotes: document.getElementById('item-notes')?.value.trim() || '',
