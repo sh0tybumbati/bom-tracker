@@ -158,20 +158,19 @@ body {
 }
 
 #sidebar-csv-btns {
-  flex-shrink: 0;
   display: flex;
   gap: 6px;
-  padding: 0 8px 8px;
+  margin-top: 10px;
 }
 
 #sidebar-csv-btns button {
   flex: 1;
-  padding: 7px 0;
-  background: var(--surface2);
+  padding: 5px 0;
+  background: var(--surface);
   color: var(--text-muted);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.75rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
@@ -181,7 +180,7 @@ body {
 #sidebar-csv-btns button:hover {
   color: var(--text);
   border-color: var(--border-hi);
-  background: var(--surface3);
+  background: var(--surface2);
 }
 
 #new-bom-btn {

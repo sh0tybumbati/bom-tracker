@@ -1980,42 +1980,49 @@ function exportCSV() {
     ]));
   }
 
-  // ── Bundles ──
-  if (bom.bundles?.length) {
-    sections.push('');
-    sections.push(row(['BUNDLES (Current BOM)']));
-    sections.push(row(['Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
-    for (const b of bom.bundles) {
-      const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
-      sections.push(row([b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
-    }
-  }
+  const baseName = bom.name.replace(/[^a-z0-9]/gi, '_');
 
-  // ── Proposals ──
-  if (bom.proposals?.length) {
-    sections.push('');
-    sections.push(row(['PROPOSALS']));
-    for (const prop of bom.proposals) {
-      sections.push('');
-      sections.push(row([`Proposal: ${prop.name}`, prop.description || '']));
-      const t = calcProposalTotal(bom, prop.bundles || []);
-      sections.push(row(['Total', t ? t.display : 'No prices']));
-      if (prop.bundles?.length) {
-        sections.push(row(['  Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
-        for (const b of prop.bundles) {
-          const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
-          sections.push(row(['  ' + b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
-        }
-      } else {
-        sections.push(row(['  (no bundles — all items at individual prices)']));
+  // Download items CSV
+  const itemsCsv = sections.join('\n');
+  downloadText(itemsCsv, `${baseName}_items.csv`, 'text/csv');
+
+  // ── Bundles + Proposals — separate file if any exist ──
+  const allBundles = [
+    ...(bom.bundles || []).map(b => ({ ...b, _source: 'Current BOM' })),
+    ...(bom.proposals || []).flatMap(p => (p.bundles || []).map(b => ({ ...b, _source: `Proposal: ${p.name}` }))),
+  ];
+
+  if (allBundles.length || bom.proposals?.length) {
+    const bSections = [];
+    bSections.push(row(['BUNDLES & PROPOSALS', bom.name]));
+    bSections.push('');
+
+    if (allBundles.length) {
+      bSections.push(row(['Source', 'Bundle Name', 'Platform', 'Price', 'Currency', 'URL', 'Covers Items']));
+      for (const b of allBundles) {
+        const covered = (b.coversItemIds || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
+        bSections.push(row([b._source, b.name, b.platform || '', b.price || '', b.currency || '$', b.url || '', covered]));
+      }
+      bSections.push('');
+    }
+
+    if (bom.proposals?.length) {
+      bSections.push(row(['PROPOSAL TOTALS']));
+      bSections.push(row(['Proposal', 'Description', 'Bundles', 'Total']));
+      for (const prop of bom.proposals) {
+        const t = calcProposalTotal(bom, prop.bundles || [], prop.itemOverrides || {});
+        bSections.push(row([prop.name, prop.description || '', prop.bundles?.length || 0, t ? t.display : 'No prices']));
       }
     }
-  }
 
-  const csv = sections.join('\n');
+    setTimeout(() => downloadText(bSections.join('\n'), `${baseName}_bundles_proposals.csv`, 'text/csv'), 300);
+  }
+}
+
+function downloadText(text, filename, type) {
   const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-  a.download = `${bom.name.replace(/[^a-z0-9]/gi, '_')}_BOM.csv`;
+  a.href = `data:${type};charset=utf-8,` + encodeURIComponent(text);
+  a.download = filename;
   a.click();
 }
 
