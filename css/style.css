@@ -886,6 +886,32 @@ textarea { resize: vertical; min-height: 70px; }
   transform: translateX(-50%) translateY(0);
 }
 
+/* ── Bundles ── */
+.bundle-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #a78bfa18;
+  border: 1px solid #a78bfa44;
+  color: var(--accent2);
+}
+
+.bundle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.bundle-row-name { font-size: 0.875rem; font-weight: 600; }
+.bundle-row-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -135,6 +135,7 @@ function loadData() {
     if (!d.specFields) d.specFields = [...DEFAULT_SPEC_FIELDS];
     // Migrate: if item.specs is a plain string, move to specsNotes
     d.boms.forEach(bom => {
+      if (!bom.bundles) bom.bundles = [];
       bom.items.forEach(item => {
         if (typeof item.specs === 'string') { item.specsNotes = item.specs; item.specs = {}; }
         if (!item.specs) item.specs = {};
@@ -358,6 +359,7 @@ function renderBomHeader() {
       </div>
       <button class="header-btn" id="edit-bom-btn">Edit</button>
       <button class="header-btn primary" id="add-item-btn">+ Add Item</button>
+      <button class="header-btn" id="manage-bundles-btn">📦 Bundles</button>
       <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
       <button class="header-btn" id="export-csv-btn">Export CSV</button>
       <button class="header-btn" id="share-bom-btn">🔗 Share</button>
@@ -395,6 +397,7 @@ function renderBomHeader() {
 
   document.getElementById('edit-bom-btn').addEventListener('click', () => openBomModal(bom));
   document.getElementById('add-item-btn').addEventListener('click', () => openItemModal(null));
+  document.getElementById('manage-bundles-btn').addEventListener('click', openBundlesModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
@@ -549,6 +552,8 @@ function renderItemCard(item, bom) {
 
   const status = item.status || 'needed';
   const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
+  const bundle = coveredByBundle(item.id, bom);
+  const bundleBadge = bundle ? `<span class="bundle-badge" title="Price covered by bundle">📦 ${esc(bundle.name)}</span>` : '';
 
   return `
     <div class="item-card status-${status}">
@@ -563,7 +568,7 @@ function renderItemCard(item, bom) {
         </div>
         ${specChips ? `<div class="spec-chips">${specChips}</div>` : ''}
         ${item.specsNotes ? `<div class="item-specs">${esc(item.specsNotes)}</div>` : ''}
-        <div class="item-links">${platformBtns || '<span style="font-size:0.73rem;color:var(--text-muted)">No links added</span>'}</div>
+        ${bundleBadge ? `<div style="margin-bottom:6px">${bundleBadge}</div>` : `<div class="item-links">${platformBtns || '<span style="font-size:0.73rem;color:var(--text-muted)">No links added</span>'}</div>`}
         ${linkedHtml ? `<div class="compat-row">${linkedHtml}</div>` : ''}
       </div>
       <div class="item-actions">
@@ -826,6 +831,159 @@ function buildItemFromModal(existing) {
   };
 }
 
+// ── Bundles / Kits ────────────────────────────────────────────────────────────
+
+function openBundlesModal() {
+  const bom = getActiveBom();
+  if (!bom) return;
+  if (!bom.bundles) bom.bundles = [];
+
+  const PLATFORM_OPTS = ['amazon','lazada','aliexpress','other'];
+
+  function renderBundleList() {
+    if (!bom.bundles.length) return `<p style="font-size:0.8rem;color:var(--text-muted);padding:8px 0">No bundles yet. Add one below.</p>`;
+    return bom.bundles.map((b, i) => {
+      const covered = (b.coversItemIds || []).map(id => bom.items.find(it => it.id === id)?.name).filter(Boolean);
+      const priceStr = b.price ? ` · ${b.currency || '$'}${b.price}` : '';
+      return `
+        <div class="bundle-row" data-idx="${i}">
+          <div class="bundle-row-info">
+            <div class="bundle-row-name">${esc(b.name)}</div>
+            <div class="bundle-row-meta">${esc(b.platform || 'other')}${priceStr} · covers: ${covered.length ? covered.map(esc).join(', ') : 'none'}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="header-btn bundle-edit-btn" data-idx="${i}">Edit</button>
+            <button class="item-del-btn bundle-del-btn" data-idx="${i}">Del</button>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  const html = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <h2>📦 Bundles & Kits</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:14px">A bundle is one purchase link that covers multiple items (e.g. a sensor kit). Covered items are excluded from individual price totals.</p>
+          <div id="bundle-list">${renderBundleList()}</div>
+          <button class="header-btn primary" id="add-bundle-btn" style="margin-top:12px">+ Add Bundle</button>
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn primary" id="modal-close2">Done</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay');
+  const close = () => { overlay.remove(); renderAll(); };
+  document.getElementById('modal-close').addEventListener('click', close);
+  document.getElementById('modal-close2').addEventListener('click', close);
+
+  function rebind() {
+    document.getElementById('bundle-list').innerHTML = renderBundleList();
+    document.querySelectorAll('.bundle-del-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        bom.bundles.splice(parseInt(btn.dataset.idx), 1);
+        saveData(data);
+        rebind();
+      })
+    );
+    document.querySelectorAll('.bundle-edit-btn').forEach(btn =>
+      btn.addEventListener('click', () => openBundleEditModal(bom, parseInt(btn.dataset.idx), rebind))
+    );
+  }
+  rebind();
+
+  document.getElementById('add-bundle-btn').addEventListener('click', () =>
+    openBundleEditModal(bom, null, rebind)
+  );
+}
+
+function openBundleEditModal(bom, idx, onSave) {
+  const existing = idx !== null ? bom.bundles[idx] : null;
+  const coveredIds = new Set(existing?.coversItemIds || []);
+
+  const itemCheckboxes = bom.items.map(item => `
+    <label class="linked-checkbox">
+      <input type="checkbox" name="bundle-item" value="${item.id}" ${coveredIds.has(item.id) ? 'checked' : ''}>
+      ${esc(item.name)}
+    </label>`).join('') || `<p style="font-size:0.75rem;color:var(--text-muted)">No items in this BOM yet.</p>`;
+
+  const html = `
+    <div class="modal-overlay" id="modal-overlay-bundle" style="z-index:200">
+      <div class="modal" style="max-width:480px">
+        <div class="modal-header">
+          <h2>${existing ? 'Edit Bundle' : 'New Bundle'}</h2>
+          <button class="modal-close" id="bundle-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Bundle Name</label>
+            <input type="text" id="bundle-name" placeholder="e.g. Arduino Sensor Kit" value="${esc(existing?.name || '')}">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Platform</label>
+              <select id="bundle-platform">
+                ${['amazon','lazada','aliexpress','other'].map(p => `<option value="${p}" ${(existing?.platform||'other')===p?'selected':''}>${p.charAt(0).toUpperCase()+p.slice(1)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Price</label>
+              <input type="number" id="bundle-price" step="0.01" min="0" placeholder="0.00" value="${existing?.price || ''}">
+            </div>
+            <div class="form-group" style="max-width:80px">
+              <label>Currency</label>
+              <input type="text" id="bundle-currency" maxlength="5" value="${esc(existing?.currency || '$')}">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Purchase URL</label>
+            <input type="url" id="bundle-url" placeholder="https://..." value="${esc(existing?.url || '')}">
+          </div>
+          <div class="modal-section-title">Items included in this bundle</div>
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">Check every item this purchase covers.</p>
+          <div id="bundle-items-list">${itemCheckboxes}</div>
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn" id="bundle-cancel">Cancel</button>
+          <button class="header-btn primary" id="bundle-save">${existing ? 'Save' : 'Add Bundle'}</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay-bundle');
+  const close = () => overlay.remove();
+  document.getElementById('bundle-close').addEventListener('click', close);
+  document.getElementById('bundle-cancel').addEventListener('click', close);
+  document.getElementById('bundle-name').focus();
+
+  document.getElementById('bundle-save').addEventListener('click', () => {
+    const name = document.getElementById('bundle-name').value.trim();
+    if (!name) return alert('Name required');
+    const coversItemIds = [...document.querySelectorAll('input[name="bundle-item"]:checked')].map(el => el.value);
+    const bundle = {
+      id: existing?.id || uuid(),
+      name,
+      platform: document.getElementById('bundle-platform').value,
+      price: document.getElementById('bundle-price').value,
+      currency: document.getElementById('bundle-currency').value.trim() || '$',
+      url: document.getElementById('bundle-url').value.trim(),
+      coversItemIds,
+    };
+    if (idx !== null) bom.bundles[idx] = bundle;
+    else bom.bundles.push(bundle);
+    saveData(data);
+    close();
+    onSave();
+  });
+}
+
 // ── Spec fields manager ───────────────────────────────────────────────────────
 
 function openSpecFieldsModal() {
@@ -1003,10 +1161,28 @@ function getPrices(item) {
     .filter(Boolean);
 }
 
+function coveredByBundle(itemId, bom) {
+  return (bom.bundles || []).find(b => b.coversItemIds?.includes(itemId)) || null;
+}
+
 function calcBomTotal(bom) {
   const dc = getDisplayCurrency();
   let total = 0, hasAny = false, hasUnconverted = false;
+  const bundleCounted = new Set();
+
   for (const item of bom.items) {
+    const bundle = coveredByBundle(item.id, bom);
+    if (bundle) {
+      if (!bundleCounted.has(bundle.id) && bundle.price) {
+        bundleCounted.add(bundle.id);
+        hasAny = true;
+        const fromCode = codeOfSym(bundle.currency || '$');
+        const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
+        if (conv) total += conv.amount;
+        else { total += parseFloat(bundle.price); hasUnconverted = true; }
+      }
+      continue;
+    }
     const prices = getPrices(item);
     if (!prices.length) continue;
     const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
@@ -1016,7 +1192,6 @@ function calcBomTotal(bom) {
     if (conv) {
       total += conv.amount * (item.quantity || 1);
     } else {
-      // Unknown currency — add raw, flag as mixed
       total += cheapest.price * (item.quantity || 1);
       hasUnconverted = true;
     }
