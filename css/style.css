@@ -705,6 +705,57 @@ body.sidebar-hidden #show-sidebar-btn { display: flex; }
   background: var(--surface);
 }
 
+/* ── Auto-fill ── */
+.autofill-section {
+  background: linear-gradient(135deg, #1e1830, var(--surface2));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+
+.autofill-row {
+  display: flex;
+  gap: 8px;
+}
+
+.autofill-row input {
+  flex: 1;
+  background: var(--surface);
+  border-color: var(--border-hi);
+  font-size: 0.82rem;
+  padding: 8px 12px;
+}
+
+.autofill-btn {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.autofill-btn:hover   { opacity: 0.85; }
+.autofill-btn:disabled { opacity: 0.5; cursor: default; }
+
+.autofill-status {
+  font-size: 0.72rem;
+  margin-top: 6px;
+  color: var(--text-muted);
+  min-height: 16px;
+}
+
+.autofill-status.loading { color: var(--accent2); }
+.autofill-status.success { color: var(--green); }
+.autofill-status.error   { color: #f87171; }
+
 /* ── Form ── */
 .form-group { margin-bottom: 14px; }
 

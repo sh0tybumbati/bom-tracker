@@ -689,6 +689,13 @@ function openItemModal(existing = null) {
           <button class="modal-close" id="modal-close">✕</button>
         </div>
         <div class="modal-body">
+          <div class="autofill-section">
+            <div class="autofill-row">
+              <input type="url" id="autofill-url" placeholder="Paste a product URL to auto-fill name, image & price…">
+              <button id="autofill-btn" class="autofill-btn">↓ Fill</button>
+            </div>
+            <div id="autofill-status" class="autofill-status"></div>
+          </div>
           <div class="form-row">
             <div class="form-group">
               <label>Item Name</label>
@@ -765,6 +772,59 @@ function openItemModal(existing = null) {
   document.getElementById('modal-close').addEventListener('click', close);
   document.getElementById('modal-cancel').addEventListener('click', close);
   document.getElementById('item-name').focus();
+
+  // ── Auto-fill ──
+  const autofillInput  = document.getElementById('autofill-url');
+  const autofillBtn    = document.getElementById('autofill-btn');
+  const autofillStatus = document.getElementById('autofill-status');
+
+  function setAutofillStatus(msg, type = '') {
+    autofillStatus.textContent = msg;
+    autofillStatus.className = `autofill-status ${type}`;
+  }
+
+  async function runAutofill() {
+    const url = autofillInput.value.trim();
+    if (!url) return;
+    autofillBtn.disabled = true;
+    autofillBtn.textContent = '…';
+
+    const result = await fetchProductData(url, setAutofillStatus);
+
+    autofillBtn.disabled = false;
+    autofillBtn.textContent = '↓ Fill';
+
+    if (!result) return;
+
+    // Fill name if empty
+    const nameEl = document.getElementById('item-name');
+    if (!nameEl.value.trim()) nameEl.value = result.name;
+
+    // Fill image
+    if (result.imageUrl) {
+      const imgEl = document.getElementById('item-img');
+      imgEl.value = result.imageUrl;
+      const preview = document.getElementById('img-preview');
+      preview.src = result.imageUrl;
+      preview.style.display = 'block';
+    }
+
+    // Fill platform URL + price + currency
+    const platform = result.platform;
+    if (platform && ['amazon','lazada','aliexpress'].includes(platform)) {
+      const urlEl      = document.getElementById(`${platform}-url`);
+      const priceEl    = document.getElementById(`${platform}-price`);
+      const currencyEl = document.getElementById(`${platform}-currency`);
+      if (urlEl && !urlEl.value.trim())   urlEl.value      = result.platformUrl;
+      if (priceEl && result.price)        priceEl.value    = result.price;
+      if (currencyEl && result.currency)  currencyEl.value = result.currency;
+    }
+  }
+
+  autofillBtn.addEventListener('click', runAutofill);
+  autofillInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runAutofill(); } });
+  // Auto-trigger on paste
+  autofillInput.addEventListener('paste', () => setTimeout(runAutofill, 50));
 
   // Image preview
   document.getElementById('item-img').addEventListener('input', e => {
@@ -1124,6 +1184,121 @@ function openProposalEditModal(bom, idx, onSave) {
     close();
     onSave();
   });
+}
+
+// ── URL Auto-fill ─────────────────────────────────────────────────────────────
+
+function detectPlatformFromUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.includes('amazon'))     return 'amazon';
+    if (host.includes('lazada'))     return 'lazada';
+    if (host.includes('aliexpress')) return 'aliexpress';
+  } catch {}
+  return null;
+}
+
+function detectCurrencySymFromUrl(url) {
+  const u = url.toLowerCase();
+  if (/amazon\.com\.ph/.test(u) || /lazada\.com\.ph/.test(u)) return '₱';
+  if (/amazon\.sg/     .test(u) || /lazada\.sg/     .test(u)) return 'S$';
+  if (/amazon\.co\.uk/.test(u))  return '£';
+  if (/amazon\.co\.jp/.test(u))  return '¥';
+  if (/amazon\.(de|fr|it|es|nl|be|at|pl)/.test(u)) return '€';
+  if (/amazon\.com\.au/.test(u)) return 'A$';
+  if (/amazon\.ca/    .test(u))  return 'C$';
+  if (/lazada\.com\.my/.test(u)) return 'RM ';
+  if (/lazada\.co\.th/.test(u))  return '฿';
+  if (/lazada\.vn/    .test(u))  return '₫';
+  if (/lazada\.co\.id/.test(u))  return 'Rp ';
+  return '$';
+}
+
+function extractPriceFromHtml(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // JSON-LD structured data (most reliable)
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        let d = JSON.parse(script.textContent);
+        if (Array.isArray(d)) d = d[0];
+        const offers = d?.offers;
+        if (!offers) continue;
+        const o = Array.isArray(offers) ? offers[0] : offers;
+        if (o?.price !== undefined) {
+          const cur = o.priceCurrency ? (symOf(o.priceCurrency) || o.priceCurrency) : null;
+          return { price: String(o.price), currency: cur };
+        }
+      } catch {}
+    }
+    // Open Graph / product meta tags
+    const amount = doc.querySelector('meta[property="product:price:amount"], meta[property="og:price:amount"]')?.content;
+    const cur    = doc.querySelector('meta[property="product:price:currency"], meta[property="og:price:currency"]')?.content;
+    if (amount) return { price: amount, currency: cur ? (symOf(cur) || cur) : null };
+  } catch {}
+  return null;
+}
+
+async function fetchProductData(url, onStatus) {
+  const platform = detectPlatformFromUrl(url);
+  const fallbackCurrency = detectCurrencySymFromUrl(url);
+  let name = '', imageUrl = '', price = '', currency = fallbackCurrency;
+
+  // ── Step 1: microlink (name + image, occasionally price) ──
+  onStatus('Fetching…', 'loading');
+  try {
+    const res = await fetch(
+      `https://api.microlink.io/?url=${encodeURIComponent(url)}&palette=false&audio=false&video=false&iframe=false`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (res.ok) {
+      const json = await res.json();
+      if (json.status === 'success' && json.data) {
+        name     = json.data.title || '';
+        imageUrl = json.data.image?.url || '';
+        if (json.data.price) {
+          price    = String(json.data.price.amount ?? json.data.price ?? '');
+          if (json.data.price.currency) currency = symOf(json.data.price.currency) || fallbackCurrency;
+        }
+      }
+    }
+  } catch {}
+
+  // ── Step 2: allorigins fallback (price via JSON-LD, and name/image if missing) ──
+  if (!price || !name || !imageUrl) {
+    if (!price) onStatus('Checking for price…', 'loading');
+    try {
+      const res = await fetch(
+        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+        { signal: AbortSignal.timeout(10000) }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        if (json.contents) {
+          if (!price) {
+            const extracted = extractPriceFromHtml(json.contents);
+            if (extracted?.price) {
+              price    = extracted.price;
+              currency = extracted.currency || fallbackCurrency;
+            }
+          }
+          if (!name || !imageUrl) {
+            const doc = new DOMParser().parseFromString(json.contents, 'text/html');
+            if (!name)     name     = doc.querySelector('meta[property="og:title"]')?.content || doc.querySelector('title')?.textContent?.trim() || '';
+            if (!imageUrl) imageUrl = doc.querySelector('meta[property="og:image"]')?.content || '';
+          }
+        }
+      }
+    } catch {}
+  }
+
+  const filled = [name && 'name', imageUrl && 'image', price && 'price'].filter(Boolean);
+  if (!filled.length) {
+    onStatus('Nothing found — fill manually', 'error');
+    return null;
+  }
+  onStatus(`Got: ${filled.join(', ')}`, 'success');
+  return { name, imageUrl, price, currency, platform, platformUrl: url };
 }
 
 // ── Bundles / Kits ────────────────────────────────────────────────────────────
