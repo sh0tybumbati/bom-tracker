@@ -363,8 +363,6 @@ function renderBomHeader() {
       <button class="header-btn" id="manage-bundles-btn">📦 Bundles</button>
       <button class="header-btn" id="compare-btn">⚖ Compare</button>
       <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
-      <button class="header-btn" id="export-csv-btn">↓ CSV</button>
-      <button class="header-btn" id="import-csv-btn">↑ CSV</button>
       <button class="header-btn" id="share-bom-btn">🔗 Share</button>
       <button class="header-btn danger" id="delete-bom-btn">Delete</button>
     </div>
@@ -403,8 +401,6 @@ function renderBomHeader() {
   document.getElementById('manage-bundles-btn').addEventListener('click', openBundlesModal);
   document.getElementById('compare-btn').addEventListener('click', openCompareModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
-  document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
-  document.getElementById('import-csv-btn').addEventListener('click', triggerCSVImport);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
 
@@ -2183,6 +2179,8 @@ currencySelect.addEventListener('change', () => {
 });
 
 document.getElementById('new-bom-btn').addEventListener('click', () => openBomModal());
+document.getElementById('import-csv-btn').addEventListener('click', triggerCSVImport);
+document.getElementById('export-csv-btn').addEventListener('click', () => { const bom = getActiveBom(); if (bom) exportCSV(); else alert('Select a BOM first'); });
 document.getElementById('hide-sidebar-btn').addEventListener('click', () => document.body.classList.add('sidebar-hidden'));
 document.getElementById('show-sidebar-btn').addEventListener('click', () => document.body.classList.remove('sidebar-hidden'));
 if (data.boms.length > 0) activeBomId = data.boms[0].id;

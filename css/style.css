@@ -157,6 +157,33 @@ body {
   margin-top: 3px;
 }
 
+#sidebar-csv-btns {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+#sidebar-csv-btns button {
+  flex: 1;
+  padding: 7px 0;
+  background: var(--surface2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+#sidebar-csv-btns button:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+  background: var(--surface3);
+}
+
 #new-bom-btn {
   flex-shrink: 0;
   padding: 7px 12px;
