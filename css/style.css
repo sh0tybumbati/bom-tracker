@@ -32,6 +32,7 @@ body {
   color: var(--text);
   min-height: 100vh;
   padding-top: 52px;
+  overflow-x: hidden;
 }
 
 /* ── Topbar ── */
@@ -174,8 +175,7 @@ body {
 #main {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 52px);
-  overflow: hidden;
+  min-height: calc(100vh - 52px);
 }
 
 #bom-header {
@@ -186,6 +186,9 @@ body {
   gap: 10px;
   background: var(--surface);
   flex-wrap: wrap;
+  position: sticky;
+  top: 52px;
+  z-index: 100;
 }
 
 #bom-title-wrap { flex: 1; min-width: 0; }
@@ -292,8 +295,6 @@ body {
 }
 
 #items-area {
-  flex: 1;
-  overflow-y: auto;
   padding: 12px 20px 20px;
 }
 
