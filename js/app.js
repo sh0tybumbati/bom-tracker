@@ -363,7 +363,8 @@ function renderBomHeader() {
       <button class="header-btn" id="manage-bundles-btn">📦 Bundles</button>
       <button class="header-btn" id="compare-btn">⚖ Compare</button>
       <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
-      <button class="header-btn" id="export-csv-btn">Export CSV</button>
+      <button class="header-btn" id="export-csv-btn">↓ CSV</button>
+      <button class="header-btn" id="import-csv-btn">↑ CSV</button>
       <button class="header-btn" id="share-bom-btn">🔗 Share</button>
       <button class="header-btn danger" id="delete-bom-btn">Delete</button>
     </div>
@@ -403,6 +404,7 @@ function renderBomHeader() {
   document.getElementById('compare-btn').addEventListener('click', openCompareModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
+  document.getElementById('import-csv-btn').addEventListener('click', triggerCSVImport);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
 
@@ -1709,6 +1711,237 @@ function deleteBom() {
   data.boms = data.boms.filter(b => b.id !== activeBomId);
   activeBomId = data.boms[0]?.id || null;
   saveData(data); renderAll();
+}
+
+// ── Import CSV ────────────────────────────────────────────────────────────────
+
+function parseCSVLine(text, pos) {
+  const fields = [];
+  let i = pos;
+  while (i < text.length && text[i] !== '\n' && text[i] !== '\r') {
+    if (text[i] === '"') {
+      i++;
+      let val = '';
+      while (i < text.length) {
+        if (text[i] === '"' && text[i + 1] === '"') { val += '"'; i += 2; }
+        else if (text[i] === '"') { i++; break; }
+        else val += text[i++];
+      }
+      fields.push(val);
+      if (text[i] === ',') i++;
+    } else {
+      let val = '';
+      while (i < text.length && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r') val += text[i++];
+      fields.push(val.trim());
+      if (text[i] === ',') i++;
+    }
+  }
+  if (text[i] === '\r') i++;
+  if (text[i] === '\n') i++;
+  return { fields, next: i };
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const { fields, next } = parseCSVLine(text, pos);
+    pos = next;
+    if (fields.length && !(fields.length === 1 && fields[0] === '')) rows.push(fields);
+  }
+  return rows;
+}
+
+function importItemsFromCSV(rows) {
+  // Find ITEMS section header row
+  let headerIdx = rows.findIndex(r => r[0] === 'ITEMS');
+  headerIdx = headerIdx >= 0 ? headerIdx + 1 : (rows[0]?.[0] === 'Name' ? 0 : -1);
+  if (headerIdx < 0) return null;
+
+  const header = rows[headerIdx];
+  const ci = name => header.findIndex(h => h.toLowerCase() === name.toLowerCase());
+  const iName    = ci('name');
+  const iQty     = ci('qty');
+  const iStatus  = ci('status');
+  const iType    = ci('component type') >= 0 ? ci('component type') : ci('componenttype');
+  const iNotes   = ci('notes');
+  const iImg     = ci('image url');
+  const iAmazonUrl = ci('amazon url'), iAmazonPrice = ci('amazon price'), iAmazonCur = ci('amazon currency');
+  const iLazUrl    = ci('lazada url'),  iLazPrice    = ci('lazada price'),  iLazCur    = ci('lazada currency');
+  const iAliUrl    = ci('aliexpress url'), iAliPrice = ci('aliexpress price'), iAliCur = ci('aliexpress currency');
+  if (iName < 0) return null;
+
+  // Detect spec field columns: headers matching existing spec field names
+  const specColMap = []; // { fieldId, colIdx }
+  data.specFields.forEach(f => {
+    const idx = header.findIndex(h => h.toLowerCase().startsWith(f.name.toLowerCase()));
+    if (idx >= 0) specColMap.push({ field: f, colIdx: idx });
+  });
+
+  // Find end of items section
+  let endIdx = rows.length;
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const first = rows[i][0];
+    if (first === 'BUNDLES' || first === 'BUNDLES (Current BOM)' || first === 'PROPOSALS' || first === '') {
+      endIdx = i; break;
+    }
+  }
+
+  const items = [];
+  for (let i = headerIdx + 1; i < endIdx; i++) {
+    const r = rows[i];
+    const name = r[iName]?.trim();
+    if (!name) continue;
+
+    // Parse specs
+    const specs = {};
+    specColMap.forEach(({ field, colIdx }) => {
+      const raw = r[colIdx]?.trim();
+      if (!raw || raw === '—') return;
+      if (field.type === 'text') {
+        specs[field.id] = { text: raw };
+      } else if (field.type === 'value') {
+        const v = parseFloat(raw);
+        if (!isNaN(v)) specs[field.id] = { value: v };
+      } else if (field.type === 'range') {
+        // "5–12V" or "5V" or "5"
+        const rangeMatch = raw.replace(/[^\d.\-–]/g, '').match(/^([\d.]+)[–-]([\d.]+)$/);
+        if (rangeMatch) specs[field.id] = { min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
+        else { const v = parseFloat(raw); if (!isNaN(v)) specs[field.id] = { value: v }; }
+      }
+    });
+
+    const statusRaw = (r[iStatus] || '').toLowerCase();
+    const status = statusRaw.includes('order') && !statusRaw.includes('need') ? 'ordered'
+                 : statusRaw.includes('stock') || statusRaw.includes('receiv') ? 'received'
+                 : 'needed';
+
+    items.push({
+      id: uuid(),
+      name,
+      componentType: iType >= 0 ? r[iType]?.trim() || '' : '',
+      quantity: parseInt(r[iQty]) || 1,
+      status,
+      specsNotes: iNotes >= 0 ? r[iNotes]?.trim() || '' : '',
+      imageUrl:   iImg   >= 0 ? r[iImg]?.trim()   || '' : '',
+      specs,
+      linkedParts: [],
+      platforms: {
+        amazon:     { url: r[iAmazonUrl]?.trim() || '', price: r[iAmazonPrice]?.trim() || '', currency: r[iAmazonCur]?.trim() || '$' },
+        lazada:     { url: r[iLazUrl]?.trim()    || '', price: r[iLazPrice]?.trim()    || '', currency: r[iLazCur]?.trim()    || '$' },
+        aliexpress: { url: r[iAliUrl]?.trim()    || '', price: r[iAliPrice]?.trim()    || '', currency: r[iAliCur]?.trim()    || '$' },
+      },
+    });
+  }
+  return items;
+}
+
+function triggerCSVImport() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv,text/csv';
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      const rows = parseCSV(e.target.result);
+      const items = importItemsFromCSV(rows);
+      if (!items || !items.length) {
+        alert('No items found in CSV. Make sure it was exported from BOM Tracker.');
+        return;
+      }
+      openCSVImportModal(items, file.name);
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+function openCSVImportModal(items, filename) {
+  const bom = getActiveBom();
+  const html = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" style="max-width:460px">
+        <div class="modal-header">
+          <h2>↑ Import CSV</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:0.82rem;margin-bottom:14px">
+            Found <strong>${items.length} item(s)</strong> in <em>${esc(filename)}</em>.
+          </p>
+          <div class="form-group">
+            <label>Import into</label>
+            <select id="import-target">
+              ${bom ? `<option value="${bom.id}">Current BOM: ${esc(bom.name)}</option>` : ''}
+              ${data.boms.filter(b => b.id !== bom?.id).map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}
+              <option value="__new__">+ Create new BOM from file</option>
+            </select>
+          </div>
+          <div class="form-group" id="new-bom-name-group" style="display:none">
+            <label>New BOM Name</label>
+            <input type="text" id="import-bom-name" placeholder="BOM name" value="${esc(filename.replace(/\.csv$/i, ''))}">
+          </div>
+          <div class="form-group">
+            <label>If item name already exists</label>
+            <select id="import-dupe">
+              <option value="add">Add anyway (allow duplicates)</option>
+              <option value="skip">Skip duplicates</option>
+            </select>
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-top:10px;max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
+            ${items.slice(0, 20).map(it => `<div style="padding:2px 0">${esc(it.componentType ? it.componentType + ' · ' : '')}${esc(it.name)} <span style="color:var(--text-muted)">×${it.quantity}</span></div>`).join('')}
+            ${items.length > 20 ? `<div style="color:var(--text-muted);margin-top:4px">…and ${items.length - 20} more</div>` : ''}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn" id="modal-cancel">Cancel</button>
+          <button class="header-btn primary" id="import-confirm">Import ${items.length} item(s)</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay');
+  const close = () => overlay.remove();
+  document.getElementById('modal-close').addEventListener('click', close);
+  document.getElementById('modal-cancel').addEventListener('click', close);
+
+  document.getElementById('import-target').addEventListener('change', e => {
+    document.getElementById('new-bom-name-group').style.display = e.target.value === '__new__' ? '' : 'none';
+  });
+
+  document.getElementById('import-confirm').addEventListener('click', () => {
+    const targetVal = document.getElementById('import-target').value;
+    const skipDupes = document.getElementById('import-dupe').value === 'skip';
+
+    let targetBom;
+    if (targetVal === '__new__') {
+      const name = document.getElementById('import-bom-name').value.trim() || filename;
+      targetBom = { id: uuid(), name, description: '', items: [], bundles: [], proposals: [], createdAt: Date.now() };
+      data.boms.push(targetBom);
+      activeBomId = targetBom.id;
+    } else {
+      targetBom = data.boms.find(b => b.id === targetVal);
+    }
+    if (!targetBom) return;
+
+    let added = 0, skipped = 0;
+    for (const item of items) {
+      if (skipDupes && targetBom.items.some(i => i.name.toLowerCase() === item.name.toLowerCase())) {
+        skipped++;
+        continue;
+      }
+      targetBom.items.push(item);
+      added++;
+    }
+
+    saveData(data);
+    close();
+    renderAll();
+    showToast(`Imported ${added} item(s)${skipped ? `, skipped ${skipped} duplicate(s)` : ''}`);
+  });
 }
 
 // ── Export CSV ────────────────────────────────────────────────────────────────
