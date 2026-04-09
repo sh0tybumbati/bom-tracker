@@ -1125,6 +1125,8 @@ currencySelect.addEventListener('change', () => {
 });
 
 document.getElementById('new-bom-btn').addEventListener('click', () => openBomModal());
+document.getElementById('hide-sidebar-btn').addEventListener('click', () => document.body.classList.add('sidebar-hidden'));
+document.getElementById('show-sidebar-btn').addEventListener('click', () => document.body.classList.remove('sidebar-hidden'));
 if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
 checkShareParam();

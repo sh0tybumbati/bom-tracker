@@ -18,7 +18,10 @@
           <h1>BOM Tracker</h1>
           <p>Bill of Materials</p>
         </div>
-        <button id="new-bom-btn">+ New</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="new-bom-btn">+ New</button>
+          <button id="hide-sidebar-btn" title="Hide sidebar">‹</button>
+        </div>
       </div>
       <div id="currency-row">
         <select id="currency-select"></select>
@@ -27,6 +30,8 @@
     </div>
     <div id="bom-list"></div>
   </div>
+
+  <button id="show-sidebar-btn" title="Show sidebar">›</button>
 
   <div id="main"></div>
 
