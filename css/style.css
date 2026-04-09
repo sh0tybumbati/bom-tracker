@@ -937,6 +937,54 @@ textarea { resize: vertical; min-height: 70px; }
   transform: translateX(-50%) translateY(0);
 }
 
+/* ── Component type badge ── */
+.type-badge {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--surface3);
+  border: 1px solid var(--border-hi);
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+/* ── Copy button ── */
+.item-copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.15s;
+  font-family: inherit;
+  width: 100%;
+}
+.item-copy-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+/* ── Proposal item sources ── */
+.prop-source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.prop-source-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-source-bundle { font-size: 0.72rem; color: var(--accent2); font-weight: 600; white-space: nowrap; }
+.prop-source-select { width: auto; font-size: 0.75rem; padding: 4px 8px; flex-shrink: 0; }
+
+/* ── Compare table extras ── */
+.cmp-type-col { width: 90px; }
+.cmp-excluded { font-size: 0.72rem; color: var(--text-muted); font-style: italic; }
+
 /* ── Bundles ── */
 .bundle-badge {
   display: inline-flex;

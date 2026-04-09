@@ -489,6 +489,13 @@ function renderItems() {
     })
   );
 
+  area.querySelectorAll('.item-copy-btn').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const item = bom.items.find(i => i.id === btn.dataset.id);
+      if (item) openCopyItemModal(item);
+    })
+  );
+
   area.querySelectorAll('.item-del-btn').forEach(btn =>
     btn.addEventListener('click', () => deleteItem(btn.dataset.id))
   );
@@ -557,13 +564,17 @@ function renderItemCard(item, bom) {
   const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
   const bundle = coveredByBundle(item.id, bom);
   const bundleBadge = bundle ? `<span class="bundle-badge" title="Price covered by bundle">📦 ${esc(bundle.name)}</span>` : '';
+  const typeBadge = item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '';
 
   return `
     <div class="item-card status-${status}">
       ${imgHtml}
       <div class="item-body">
         <div class="item-top">
-          <div class="item-name">${esc(item.name)}</div>
+          <div>
+            ${typeBadge}
+            <div class="item-name">${esc(item.name)}</div>
+          </div>
           <div class="item-top-right">
             ${statusBadge}
             <div class="item-qty">×${item.quantity || 1}</div>
@@ -582,9 +593,56 @@ function renderItemCard(item, bom) {
           <button class="qty-btn" data-id="${item.id}" data-delta="1">+</button>
         </div>
         <button class="item-edit-btn" data-id="${item.id}">Edit</button>
+        <button class="item-copy-btn" data-id="${item.id}" title="Copy to another BOM">⎘</button>
         <button class="item-del-btn" data-id="${item.id}">Del</button>
       </div>
     </div>`;
+}
+
+// ── Copy item to BOM ──────────────────────────────────────────────────────────
+
+function openCopyItemModal(item) {
+  const otherBoms = data.boms.filter(b => b.id !== activeBomId);
+  const html = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" style="max-width:400px">
+        <div class="modal-header">
+          <h2>⎘ Copy Item</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:0.82rem;margin-bottom:14px">Copy <strong>${esc(item.name)}</strong> to:</p>
+          ${otherBoms.length ? otherBoms.map(b => `
+            <label class="linked-checkbox">
+              <input type="radio" name="copy-target" value="${b.id}">
+              ${esc(b.name)} <span style="font-size:0.7rem;color:var(--text-muted)">(${b.items.length} items)</span>
+            </label>`).join('') : `<p style="font-size:0.78rem;color:var(--text-muted)">No other BOMs. Create one first.</p>`}
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn" id="modal-cancel">Cancel</button>
+          ${otherBoms.length ? `<button class="header-btn primary" id="copy-confirm">Copy</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay');
+  const close = () => overlay.remove();
+  document.getElementById('modal-close').addEventListener('click', close);
+  document.getElementById('modal-cancel').addEventListener('click', close);
+
+  document.getElementById('copy-confirm')?.addEventListener('click', () => {
+    const targetId = document.querySelector('input[name="copy-target"]:checked')?.value;
+    if (!targetId) return alert('Select a BOM first');
+    const target = data.boms.find(b => b.id === targetId);
+    if (!target) return;
+    const copy = JSON.parse(JSON.stringify(item));
+    copy.id = uuid();
+    copy.linkedParts = []; // links don't transfer across BOMs
+    target.items.push(copy);
+    saveData(data);
+    close();
+    showToast(`Copied "${item.name}" to "${target.name}"`);
+  });
 }
 
 // ── BOM modal ─────────────────────────────────────────────────────────────────
@@ -704,6 +762,10 @@ function openItemModal(existing = null) {
             <div class="form-group" style="max-width:90px">
               <label>Qty</label>
               <input type="number" id="item-qty" min="1" value="${existing?.quantity || 1}">
+            </div>
+            <div class="form-group" style="max-width:140px">
+              <label>Component Type</label>
+              <input type="text" id="item-type" placeholder="e.g. MCU, Sensor…" value="${esc(existing?.componentType || '')}">
             </div>
             <div class="form-group" style="max-width:130px">
               <label>Status</label>
@@ -881,6 +943,7 @@ function buildItemFromModal(existing) {
 
   return {
     quantity: parseInt(document.getElementById('item-qty')?.value) || 1,
+    componentType: document.getElementById('item-type')?.value.trim() || '',
     status: document.getElementById('item-status')?.value || 'needed',
     imageUrl: document.getElementById('item-img')?.value.trim() || '',
     specs,
@@ -896,61 +959,75 @@ function buildItemFromModal(existing) {
 
 // ── Proposals ────────────────────────────────────────────────────────────────
 
-function calcProposalTotal(bom, bundles) {
-  // bundles = proposal-specific bundle list
+function resolveItemSource(item, bundles, itemOverrides) {
+  // Returns { type: 'bundle'|'price'|'excluded'|'none', bundle?, chosen? }
+  const bundle = (bundles || []).find(b => b.coversItemIds?.includes(item.id));
+  if (bundle) return { type: 'bundle', bundle };
+  const override = (itemOverrides || {})[item.id];
+  if (override === 'excluded') return { type: 'excluded' };
+  const prices = getPrices(item);
+  if (!prices.length) return { type: 'none' };
+  let chosen = override && override !== 'cheapest'
+    ? prices.find(p => p.platform === override)
+    : null;
+  if (!chosen) chosen = prices.reduce((a, b) => a.price < b.price ? a : b);
+  return { type: 'price', chosen };
+}
+
+function calcProposalTotal(bom, bundles, itemOverrides) {
   const dc = getDisplayCurrency();
-  const covered = id => (bundles || []).find(b => b.coversItemIds?.includes(id));
   let total = 0, hasAny = false, hasUnconverted = false;
   const bundleCounted = new Set();
 
   for (const item of bom.items) {
-    const bundle = covered(item.id);
-    if (bundle) {
-      if (!bundleCounted.has(bundle.id) && bundle.price) {
-        bundleCounted.add(bundle.id);
+    const src = resolveItemSource(item, bundles, itemOverrides);
+    if (src.type === 'excluded') continue;
+    if (src.type === 'bundle') {
+      const b = src.bundle;
+      if (!bundleCounted.has(b.id) && b.price) {
+        bundleCounted.add(b.id);
         hasAny = true;
-        const fromCode = codeOfSym(bundle.currency || '$');
-        const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
+        const fromCode = codeOfSym(b.currency || '$');
+        const conv = fromCode ? toDisplay(parseFloat(b.price), fromCode) : null;
         if (conv) total += conv.amount;
-        else { total += parseFloat(bundle.price); hasUnconverted = true; }
+        else { total += parseFloat(b.price); hasUnconverted = true; }
       }
       continue;
     }
-    const prices = getPrices(item);
-    if (!prices.length) continue;
-    const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
+    if (src.type === 'none') continue;
+    const { chosen } = src;
     hasAny = true;
-    const fromCode = codeOfSym(cheapest.currency);
-    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    const fromCode = codeOfSym(chosen.currency);
+    const conv = fromCode ? toDisplay(chosen.price, fromCode) : null;
     if (conv) total += conv.amount * (item.quantity || 1);
-    else { total += cheapest.price * (item.quantity || 1); hasUnconverted = true; }
+    else { total += chosen.price * (item.quantity || 1); hasUnconverted = true; }
   }
   if (!hasAny) return null;
   return { display: (hasUnconverted ? '~' : '') + symOf(dc) + total.toFixed(2), raw: total };
 }
 
-function cellForItem(item, bundles) {
-  const bundle = (bundles || []).find(b => b.coversItemIds?.includes(item.id));
-  if (bundle) {
-    const url = bundle.url ? `<a href="${esc(bundle.url)}" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none">📦 ${esc(bundle.name)}</a>` : `📦 ${esc(bundle.name)}`;
-    return { html: `<span class="compare-bundle-cell">${url}</span>`, type: 'bundle' };
+function cellForItem(item, bundles, itemOverrides) {
+  const src = resolveItemSource(item, bundles, itemOverrides);
+  if (src.type === 'bundle') {
+    const b = src.bundle;
+    const link = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none">📦 ${esc(b.name)}</a>` : `📦 ${esc(b.name)}`;
+    return { html: `<span class="compare-bundle-cell">${link}</span>`, type: 'bundle' };
   }
-  const prices = getPrices(item);
-  if (!prices.length) return { html: `<span style="color:var(--text-muted)">—</span>`, type: 'none' };
-  const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
-  const sym = cheapest.currency;
+  if (src.type === 'excluded') return { html: `<span class="cmp-excluded">Excluded</span>`, type: 'excluded' };
+  if (src.type === 'none')     return { html: `<span style="color:var(--text-muted)">—</span>`, type: 'none' };
+
+  const { chosen } = src;
+  const sym = chosen.currency;
   const fromCode = codeOfSym(sym);
-  const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+  const conv = fromCode ? toDisplay(chosen.price, fromCode) : null;
   const qty = item.quantity || 1;
-  const unitStr = conv && conv.converted
-    ? `${conv.symbol}${conv.amount.toFixed(2)}`
-    : `${sym}${cheapest.price}`;
+  const unitStr = conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${sym}${chosen.price}`;
   const totalStr = qty > 1
-    ? ` <span style="color:var(--text-muted);font-size:0.7rem">×${qty} = ${conv && conv.converted ? conv.symbol + (conv.amount * qty).toFixed(2) : sym + (parseFloat(cheapest.price) * qty).toFixed(2)}</span>`
+    ? ` <span style="color:var(--text-muted);font-size:0.7rem">×${qty} = ${conv?.converted ? conv.symbol + (conv.amount * qty).toFixed(2) : sym + (parseFloat(chosen.price) * qty).toFixed(2)}</span>`
     : '';
-  const label = { amazon: '🟠', lazada: '🔵', aliexpress: '🔴' }[cheapest.platform] || '';
-  const urlWrap = cheapest.url
-    ? `<a href="${esc(cheapest.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${label} ${unitStr}</a>`
+  const label = { amazon: '🟠', lazada: '🔵', aliexpress: '🔴' }[chosen.platform] || '';
+  const urlWrap = chosen.url
+    ? `<a href="${esc(chosen.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${label} ${unitStr}</a>`
     : `${label} ${unitStr}`;
   return { html: urlWrap + totalStr, type: 'price' };
 }
@@ -963,11 +1040,12 @@ function openCompareModal() {
   function buildTable() {
     // Columns: "Current BOM" + each proposal
     const cols = [
-      { name: 'Current BOM', bundles: bom.bundles || [], isBase: true },
-      ...bom.proposals.map(p => ({ name: p.name, bundles: p.bundles || [], proposal: p }))
+      { name: 'Current BOM', bundles: bom.bundles || [], itemOverrides: {}, isBase: true },
+      ...bom.proposals.map(p => ({ name: p.name, bundles: p.bundles || [], itemOverrides: p.itemOverrides || {}, proposal: p }))
     ];
 
     const header = `<tr>
+      <th class="cmp-type-col">Type</th>
       <th class="cmp-item-col">Item</th>
       <th class="cmp-qty-col">Qty</th>
       ${cols.map((c, i) => `<th class="cmp-proposal-col">
@@ -976,19 +1054,13 @@ function openCompareModal() {
       </th>`).join('')}
     </tr>`;
 
-    const rows = bom.items.map(item => {
-      const cells = cols.map(c => cellForItem(item, c.bundles));
-      // Highlight cheapest non-bundle column
-      const priceIdxs = cells.map((c, i) => c.type === 'price' ? i : null).filter(i => i !== null);
-      let cheapestCol = null;
-      if (priceIdxs.length > 1) {
-        const prices = getPrices(item);
-        if (prices.length) {
-          const base = prices.reduce((a, b) => a.price < b.price ? a : b).price;
-          cheapestCol = priceIdxs[0]; // all price cells show the same cheapest, so just note them
-        }
-      }
+    // Sort items by componentType so same types are grouped
+    const sortedItems = [...bom.items].sort((a, b) => (a.componentType || '').localeCompare(b.componentType || ''));
+
+    const rows = sortedItems.map(item => {
+      const cells = cols.map(c => cellForItem(item, c.bundles, c.itemOverrides));
       return `<tr>
+        <td class="cmp-type-col">${item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '<span style="color:var(--text-muted);font-size:0.7rem">—</span>'}</td>
         <td class="cmp-item-col"><span style="font-weight:600">${esc(item.name)}</span></td>
         <td class="cmp-qty-col" style="text-align:center;color:var(--text-muted)">${item.quantity || 1}</td>
         ${cells.map(c => `<td class="cmp-data-col">${c.html}</td>`).join('')}
@@ -1001,10 +1073,10 @@ function openCompareModal() {
     });
 
     // Find cheapest proposal total
-    const rawTotals = cols.map(c => { const t = calcProposalTotal(bom, c.bundles); return t ? t.raw : Infinity; });
+    const rawTotals = cols.map(c => { const t = calcProposalTotal(bom, c.bundles, c.itemOverrides); return t ? t.raw : Infinity; });
     const minRaw = Math.min(...rawTotals.filter(v => v !== Infinity));
     const totalCells = cols.map((c, i) => {
-      const t = calcProposalTotal(bom, c.bundles);
+      const t = calcProposalTotal(bom, c.bundles, c.itemOverrides);
       const isBest = t && t.raw === minRaw && rawTotals.filter(v => v === minRaw).length < cols.length;
       return `<td class="cmp-data-col cmp-total-cell${isBest ? ' cmp-best' : ''}">${t ? t.display : '—'}${isBest ? ' ✓' : ''}</td>`;
     });
@@ -1091,13 +1163,10 @@ function openCompareModal() {
 
 function openProposalEditModal(bom, idx, onSave) {
   const existing = idx !== null ? bom.proposals[idx] : null;
-  if (!existing && idx === null) {
-    // Create new proposal inheriting current BOM bundles as a starting point
-  }
 
   const html = `
     <div class="modal-overlay" id="modal-overlay-proposal" style="z-index:200">
-      <div class="modal" style="max-width:580px">
+      <div class="modal" style="max-width:600px">
         <div class="modal-header">
           <h2>${existing ? 'Edit Proposal' : 'New Proposal'}</h2>
           <button class="modal-close" id="prop-close">✕</button>
@@ -1113,12 +1182,17 @@ function openProposalEditModal(bom, idx, onSave) {
             <label>Description (optional)</label>
             <input type="text" id="prop-desc" placeholder="Short note about this approach" value="${esc(existing?.description || '')}">
           </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px">
-            <span class="modal-section-title" style="margin:0">Bundles in this proposal</span>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:18px 0 8px">
+            <span class="modal-section-title" style="margin:0">Bundles / Kits</span>
             <button class="header-btn primary" id="prop-add-bundle" style="font-size:0.75rem;padding:4px 10px">+ Add Bundle</button>
           </div>
-          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Define which items are purchased as kits/sets in this proposal. Items not in a bundle will use the cheapest individual price.</p>
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Items in a bundle use the bundle price. All other items fall back to the source you choose below.</p>
           <div id="prop-bundle-list"></div>
+
+          <div class="modal-section-title" style="margin-top:20px">Individual Item Sources</div>
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Choose which store to use per item, or exclude it from this proposal entirely.</p>
+          <div id="prop-item-sources"></div>
         </div>
         <div class="modal-footer">
           <button class="header-btn" id="prop-cancel">Cancel</button>
@@ -1134,49 +1208,91 @@ function openProposalEditModal(bom, idx, onSave) {
   document.getElementById('prop-cancel').addEventListener('click', close);
   document.getElementById('prop-name').focus();
 
-  // Working copy of bundles for this proposal
   let propBundles = JSON.parse(JSON.stringify(existing?.bundles || []));
+  // itemOverrides: map of itemId → 'cheapest'|'amazon'|'lazada'|'aliexpress'|'excluded'
+  let propOverrides = JSON.parse(JSON.stringify(existing?.itemOverrides || {}));
 
   function renderPropBundles() {
     const el = document.getElementById('prop-bundle-list');
     if (!propBundles.length) {
-      el.innerHTML = `<p style="font-size:0.78rem;color:var(--text-muted);padding:6px 0">No bundles — all items use cheapest individual price.</p>`;
-      return;
+      el.innerHTML = `<p style="font-size:0.78rem;color:var(--text-muted);padding:4px 0">No bundles yet.</p>`;
+    } else {
+      el.innerHTML = propBundles.map((b, i) => {
+        const covered = (b.coversItemIds || []).map(id => bom.items.find(it => it.id === id)?.name).filter(Boolean);
+        return `<div class="bundle-row">
+          <div class="bundle-row-info">
+            <div class="bundle-row-name">${esc(b.name)}</div>
+            <div class="bundle-row-meta">${b.currency || '$'}${b.price || '?'} · covers: ${covered.length ? covered.map(esc).join(', ') : 'none'}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="header-btn pb-edit" data-i="${i}">Edit</button>
+            <button class="item-del-btn pb-del" data-i="${i}">Del</button>
+          </div>
+        </div>`;
+      }).join('');
+      el.querySelectorAll('.pb-del').forEach(btn =>
+        btn.addEventListener('click', () => { propBundles.splice(parseInt(btn.dataset.i), 1); renderPropBundles(); renderItemSources(); })
+      );
+      el.querySelectorAll('.pb-edit').forEach(btn =>
+        btn.addEventListener('click', () => openBundleEditModal({ items: bom.items, bundles: propBundles }, parseInt(btn.dataset.i), () => { renderPropBundles(); renderItemSources(); }, true))
+      );
     }
-    el.innerHTML = propBundles.map((b, i) => {
-      const covered = (b.coversItemIds || []).map(id => bom.items.find(it => it.id === id)?.name).filter(Boolean);
-      return `<div class="bundle-row">
-        <div class="bundle-row-info">
-          <div class="bundle-row-name">${esc(b.name)}</div>
-          <div class="bundle-row-meta">${b.currency || '$'}${b.price || '?'} · covers: ${covered.length ? covered.map(esc).join(', ') : 'none'}</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          <button class="header-btn pb-edit" data-i="${i}">Edit</button>
-          <button class="item-del-btn pb-del" data-i="${i}">Del</button>
-        </div>
+    renderItemSources();
+  }
+
+  function renderItemSources() {
+    const el = document.getElementById('prop-item-sources');
+    const coveredIds = new Set(propBundles.flatMap(b => b.coversItemIds || []));
+    const rows = bom.items.map(item => {
+      const inBundle = coveredIds.has(item.id);
+      if (inBundle) {
+        const b = propBundles.find(b => b.coversItemIds?.includes(item.id));
+        return `<div class="prop-source-row">
+          <span class="prop-source-name">${esc(item.name)}</span>
+          <span class="prop-source-bundle">📦 ${esc(b?.name || 'bundle')}</span>
+        </div>`;
+      }
+      const prices = getPrices(item);
+      const override = propOverrides[item.id] || 'cheapest';
+      const opts = [
+        { val: 'cheapest',   label: '★ Cheapest' },
+        { val: 'amazon',     label: '🟠 Amazon',     disabled: !prices.find(p => p.platform === 'amazon') },
+        { val: 'lazada',     label: '🔵 Lazada',     disabled: !prices.find(p => p.platform === 'lazada') },
+        { val: 'aliexpress', label: '🔴 AliExpress', disabled: !prices.find(p => p.platform === 'aliexpress') },
+        { val: 'excluded',   label: '✕ Exclude' },
+      ].filter(o => !o.disabled || o.val === override);
+      return `<div class="prop-source-row">
+        <span class="prop-source-name">${esc(item.name)}</span>
+        <select class="prop-source-select" data-item-id="${item.id}">
+          ${opts.map(o => `<option value="${o.val}" ${override === o.val ? 'selected' : ''}>${o.label}</option>`).join('')}
+        </select>
       </div>`;
     }).join('');
-    el.querySelectorAll('.pb-del').forEach(btn =>
-      btn.addEventListener('click', () => { propBundles.splice(parseInt(btn.dataset.i), 1); renderPropBundles(); })
-    );
-    el.querySelectorAll('.pb-edit').forEach(btn =>
-      btn.addEventListener('click', () => openBundleEditModal({ items: bom.items, bundles: propBundles }, parseInt(btn.dataset.i), renderPropBundles, true))
+    el.innerHTML = rows || `<p style="font-size:0.78rem;color:var(--text-muted)">No items in this BOM yet.</p>`;
+    el.querySelectorAll('.prop-source-select').forEach(sel =>
+      sel.addEventListener('change', () => {
+        propOverrides[sel.dataset.itemId] = sel.value;
+      })
     );
   }
+
   renderPropBundles();
 
   document.getElementById('prop-add-bundle').addEventListener('click', () =>
-    openBundleEditModal({ items: bom.items, bundles: propBundles }, null, renderPropBundles, true)
+    openBundleEditModal({ items: bom.items, bundles: propBundles }, null, () => { renderPropBundles(); renderItemSources(); }, true)
   );
 
   document.getElementById('prop-save').addEventListener('click', () => {
     const name = document.getElementById('prop-name').value.trim();
     if (!name) return alert('Name required');
+    // Strip 'cheapest' defaults to keep storage lean
+    const cleanOverrides = Object.fromEntries(Object.entries(propOverrides).filter(([, v]) => v !== 'cheapest'));
     const proposal = {
       id: existing?.id || uuid(),
       name,
       description: document.getElementById('prop-desc').value.trim(),
       bundles: propBundles,
+      itemOverrides: cleanOverrides,
     };
     if (idx !== null) bom.proposals[idx] = proposal;
     else bom.proposals.push(proposal);
