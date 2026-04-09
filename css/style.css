@@ -912,6 +912,64 @@ textarea { resize: vertical; min-height: 70px; }
 .bundle-row-name { font-size: 0.875rem; font-weight: 600; }
 .bundle-row-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
 
+/* ── Comparison table ── */
+.cmp-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  min-width: 500px;
+}
+
+.cmp-table th, .cmp-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.cmp-table thead th {
+  background: var(--surface2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cmp-table thead th:first-child { color: var(--text); }
+
+.cmp-table tbody tr:hover td { background: var(--surface2); }
+
+.cmp-table tfoot td {
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: var(--surface2);
+  border-top: 2px solid var(--border-hi);
+  border-bottom: none;
+}
+
+.cmp-item-col  { min-width: 140px; }
+.cmp-qty-col   { width: 40px; }
+.cmp-proposal-col { min-width: 160px; }
+.cmp-data-col  { min-width: 140px; }
+
+.cmp-total-cell { color: var(--text); }
+.cmp-best { color: var(--green) !important; }
+.cmp-best::after { content: ' ★'; font-size: 0.7rem; }
+
+.compare-bundle-cell {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent2);
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

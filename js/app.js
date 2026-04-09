@@ -136,6 +136,7 @@ function loadData() {
     // Migrate: if item.specs is a plain string, move to specsNotes
     d.boms.forEach(bom => {
       if (!bom.bundles) bom.bundles = [];
+      if (!bom.proposals) bom.proposals = [];
       bom.items.forEach(item => {
         if (typeof item.specs === 'string') { item.specsNotes = item.specs; item.specs = {}; }
         if (!item.specs) item.specs = {};
@@ -360,6 +361,7 @@ function renderBomHeader() {
       <button class="header-btn" id="edit-bom-btn">Edit</button>
       <button class="header-btn primary" id="add-item-btn">+ Add Item</button>
       <button class="header-btn" id="manage-bundles-btn">📦 Bundles</button>
+      <button class="header-btn" id="compare-btn">⚖ Compare</button>
       <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
       <button class="header-btn" id="export-csv-btn">Export CSV</button>
       <button class="header-btn" id="share-bom-btn">🔗 Share</button>
@@ -398,6 +400,7 @@ function renderBomHeader() {
   document.getElementById('edit-bom-btn').addEventListener('click', () => openBomModal(bom));
   document.getElementById('add-item-btn').addEventListener('click', () => openItemModal(null));
   document.getElementById('manage-bundles-btn').addEventListener('click', openBundlesModal);
+  document.getElementById('compare-btn').addEventListener('click', openCompareModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
@@ -831,6 +834,298 @@ function buildItemFromModal(existing) {
   };
 }
 
+// ── Proposals ────────────────────────────────────────────────────────────────
+
+function calcProposalTotal(bom, bundles) {
+  // bundles = proposal-specific bundle list
+  const dc = getDisplayCurrency();
+  const covered = id => (bundles || []).find(b => b.coversItemIds?.includes(id));
+  let total = 0, hasAny = false, hasUnconverted = false;
+  const bundleCounted = new Set();
+
+  for (const item of bom.items) {
+    const bundle = covered(item.id);
+    if (bundle) {
+      if (!bundleCounted.has(bundle.id) && bundle.price) {
+        bundleCounted.add(bundle.id);
+        hasAny = true;
+        const fromCode = codeOfSym(bundle.currency || '$');
+        const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
+        if (conv) total += conv.amount;
+        else { total += parseFloat(bundle.price); hasUnconverted = true; }
+      }
+      continue;
+    }
+    const prices = getPrices(item);
+    if (!prices.length) continue;
+    const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
+    hasAny = true;
+    const fromCode = codeOfSym(cheapest.currency);
+    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    if (conv) total += conv.amount * (item.quantity || 1);
+    else { total += cheapest.price * (item.quantity || 1); hasUnconverted = true; }
+  }
+  if (!hasAny) return null;
+  return { display: (hasUnconverted ? '~' : '') + symOf(dc) + total.toFixed(2), raw: total };
+}
+
+function cellForItem(item, bundles) {
+  const bundle = (bundles || []).find(b => b.coversItemIds?.includes(item.id));
+  if (bundle) {
+    const url = bundle.url ? `<a href="${esc(bundle.url)}" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none">📦 ${esc(bundle.name)}</a>` : `📦 ${esc(bundle.name)}`;
+    return { html: `<span class="compare-bundle-cell">${url}</span>`, type: 'bundle' };
+  }
+  const prices = getPrices(item);
+  if (!prices.length) return { html: `<span style="color:var(--text-muted)">—</span>`, type: 'none' };
+  const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
+  const sym = cheapest.currency;
+  const fromCode = codeOfSym(sym);
+  const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+  const qty = item.quantity || 1;
+  const unitStr = conv && conv.converted
+    ? `${conv.symbol}${conv.amount.toFixed(2)}`
+    : `${sym}${cheapest.price}`;
+  const totalStr = qty > 1
+    ? ` <span style="color:var(--text-muted);font-size:0.7rem">×${qty} = ${conv && conv.converted ? conv.symbol + (conv.amount * qty).toFixed(2) : sym + (parseFloat(cheapest.price) * qty).toFixed(2)}</span>`
+    : '';
+  const label = { amazon: '🟠', lazada: '🔵', aliexpress: '🔴' }[cheapest.platform] || '';
+  const urlWrap = cheapest.url
+    ? `<a href="${esc(cheapest.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${label} ${unitStr}</a>`
+    : `${label} ${unitStr}`;
+  return { html: urlWrap + totalStr, type: 'price' };
+}
+
+function openCompareModal() {
+  const bom = getActiveBom();
+  if (!bom) return;
+  if (!bom.proposals) bom.proposals = [];
+
+  function buildTable() {
+    // Columns: "Current BOM" + each proposal
+    const cols = [
+      { name: 'Current BOM', bundles: bom.bundles || [], isBase: true },
+      ...bom.proposals.map(p => ({ name: p.name, bundles: p.bundles || [], proposal: p }))
+    ];
+
+    const header = `<tr>
+      <th class="cmp-item-col">Item</th>
+      <th class="cmp-qty-col">Qty</th>
+      ${cols.map((c, i) => `<th class="cmp-proposal-col">
+        ${esc(c.name)}
+        ${!c.isBase ? `<button class="cmp-edit-btn header-btn" data-idx="${i - 1}" style="margin-left:6px;font-size:0.65rem;padding:2px 7px">Edit</button>` : ''}
+      </th>`).join('')}
+    </tr>`;
+
+    const rows = bom.items.map(item => {
+      const cells = cols.map(c => cellForItem(item, c.bundles));
+      // Highlight cheapest non-bundle column
+      const priceIdxs = cells.map((c, i) => c.type === 'price' ? i : null).filter(i => i !== null);
+      let cheapestCol = null;
+      if (priceIdxs.length > 1) {
+        const prices = getPrices(item);
+        if (prices.length) {
+          const base = prices.reduce((a, b) => a.price < b.price ? a : b).price;
+          cheapestCol = priceIdxs[0]; // all price cells show the same cheapest, so just note them
+        }
+      }
+      return `<tr>
+        <td class="cmp-item-col"><span style="font-weight:600">${esc(item.name)}</span></td>
+        <td class="cmp-qty-col" style="text-align:center;color:var(--text-muted)">${item.quantity || 1}</td>
+        ${cells.map(c => `<td class="cmp-data-col">${c.html}</td>`).join('')}
+      </tr>`;
+    }).join('');
+
+    const totals = cols.map(c => {
+      const t = calcProposalTotal(bom, c.bundles);
+      return `<td class="cmp-data-col cmp-total-cell">${t ? t.display : '—'}</td>`;
+    });
+
+    // Find cheapest proposal total
+    const rawTotals = cols.map(c => { const t = calcProposalTotal(bom, c.bundles); return t ? t.raw : Infinity; });
+    const minRaw = Math.min(...rawTotals.filter(v => v !== Infinity));
+    const totalCells = cols.map((c, i) => {
+      const t = calcProposalTotal(bom, c.bundles);
+      const isBest = t && t.raw === minRaw && rawTotals.filter(v => v === minRaw).length < cols.length;
+      return `<td class="cmp-data-col cmp-total-cell${isBest ? ' cmp-best' : ''}">${t ? t.display : '—'}${isBest ? ' ✓' : ''}</td>`;
+    });
+
+    return `
+      <div class="cmp-scroll">
+        <table class="cmp-table">
+          <thead>${header}</thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td class="cmp-item-col" style="font-weight:700">Total</td>
+            <td class="cmp-qty-col"></td>
+            ${totalCells.join('')}
+          </tr></tfoot>
+        </table>
+      </div>`;
+  }
+
+  function renderProposalList() {
+    if (!bom.proposals.length) return `<p style="font-size:0.78rem;color:var(--text-muted)">No proposals yet — the Current BOM is your baseline. Add proposals to compare alternatives.</p>`;
+    return bom.proposals.map((p, i) => `
+      <div class="bundle-row">
+        <div class="bundle-row-info">
+          <div class="bundle-row-name">${esc(p.name)}</div>
+          <div class="bundle-row-meta">${p.description ? esc(p.description) + ' · ' : ''}${p.bundles?.length || 0} bundle(s)</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="header-btn prop-edit-btn" data-idx="${i}">Edit</button>
+          <button class="item-del-btn prop-del-btn" data-idx="${i}">Del</button>
+        </div>
+      </div>`).join('');
+  }
+
+  const html = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" style="max-width:92vw;width:92vw">
+        <div class="modal-header">
+          <h2>⚖ Compare Proposals</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body" style="padding-bottom:0">
+          <div id="proposals-mgmt" style="margin-bottom:16px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+              <span style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em">Proposals</span>
+              <button class="header-btn primary" id="add-proposal-btn" style="font-size:0.78rem;padding:5px 12px">+ New Proposal</button>
+            </div>
+            <div id="proposal-list">${renderProposalList()}</div>
+          </div>
+          <div id="compare-table-wrap">${buildTable()}</div>
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn primary" id="modal-close2">Done</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay');
+  const close = () => { overlay.remove(); renderAll(); };
+  document.getElementById('modal-close').addEventListener('click', close);
+  document.getElementById('modal-close2').addEventListener('click', close);
+
+  function rebind() {
+    document.getElementById('proposal-list').innerHTML = renderProposalList();
+    document.getElementById('compare-table-wrap').innerHTML = buildTable();
+    document.querySelectorAll('.prop-del-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        bom.proposals.splice(parseInt(btn.dataset.idx), 1);
+        saveData(data); rebind();
+      })
+    );
+    document.querySelectorAll('.prop-edit-btn, .cmp-edit-btn').forEach(btn =>
+      btn.addEventListener('click', () =>
+        openProposalEditModal(bom, parseInt(btn.dataset.idx), rebind)
+      )
+    );
+  }
+  rebind();
+
+  document.getElementById('add-proposal-btn').addEventListener('click', () =>
+    openProposalEditModal(bom, null, rebind)
+  );
+}
+
+function openProposalEditModal(bom, idx, onSave) {
+  const existing = idx !== null ? bom.proposals[idx] : null;
+  if (!existing && idx === null) {
+    // Create new proposal inheriting current BOM bundles as a starting point
+  }
+
+  const html = `
+    <div class="modal-overlay" id="modal-overlay-proposal" style="z-index:200">
+      <div class="modal" style="max-width:580px">
+        <div class="modal-header">
+          <h2>${existing ? 'Edit Proposal' : 'New Proposal'}</h2>
+          <button class="modal-close" id="prop-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Proposal Name</label>
+              <input type="text" id="prop-name" placeholder="e.g. Kit approach" value="${esc(existing?.name || '')}">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Description (optional)</label>
+            <input type="text" id="prop-desc" placeholder="Short note about this approach" value="${esc(existing?.description || '')}">
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px">
+            <span class="modal-section-title" style="margin:0">Bundles in this proposal</span>
+            <button class="header-btn primary" id="prop-add-bundle" style="font-size:0.75rem;padding:4px 10px">+ Add Bundle</button>
+          </div>
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Define which items are purchased as kits/sets in this proposal. Items not in a bundle will use the cheapest individual price.</p>
+          <div id="prop-bundle-list"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn" id="prop-cancel">Cancel</button>
+          <button class="header-btn primary" id="prop-save">${existing ? 'Save' : 'Create Proposal'}</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay-proposal');
+  const close = () => overlay.remove();
+  document.getElementById('prop-close').addEventListener('click', close);
+  document.getElementById('prop-cancel').addEventListener('click', close);
+  document.getElementById('prop-name').focus();
+
+  // Working copy of bundles for this proposal
+  let propBundles = JSON.parse(JSON.stringify(existing?.bundles || []));
+
+  function renderPropBundles() {
+    const el = document.getElementById('prop-bundle-list');
+    if (!propBundles.length) {
+      el.innerHTML = `<p style="font-size:0.78rem;color:var(--text-muted);padding:6px 0">No bundles — all items use cheapest individual price.</p>`;
+      return;
+    }
+    el.innerHTML = propBundles.map((b, i) => {
+      const covered = (b.coversItemIds || []).map(id => bom.items.find(it => it.id === id)?.name).filter(Boolean);
+      return `<div class="bundle-row">
+        <div class="bundle-row-info">
+          <div class="bundle-row-name">${esc(b.name)}</div>
+          <div class="bundle-row-meta">${b.currency || '$'}${b.price || '?'} · covers: ${covered.length ? covered.map(esc).join(', ') : 'none'}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="header-btn pb-edit" data-i="${i}">Edit</button>
+          <button class="item-del-btn pb-del" data-i="${i}">Del</button>
+        </div>
+      </div>`;
+    }).join('');
+    el.querySelectorAll('.pb-del').forEach(btn =>
+      btn.addEventListener('click', () => { propBundles.splice(parseInt(btn.dataset.i), 1); renderPropBundles(); })
+    );
+    el.querySelectorAll('.pb-edit').forEach(btn =>
+      btn.addEventListener('click', () => openBundleEditModal({ items: bom.items, bundles: propBundles }, parseInt(btn.dataset.i), renderPropBundles, true))
+    );
+  }
+  renderPropBundles();
+
+  document.getElementById('prop-add-bundle').addEventListener('click', () =>
+    openBundleEditModal({ items: bom.items, bundles: propBundles }, null, renderPropBundles, true)
+  );
+
+  document.getElementById('prop-save').addEventListener('click', () => {
+    const name = document.getElementById('prop-name').value.trim();
+    if (!name) return alert('Name required');
+    const proposal = {
+      id: existing?.id || uuid(),
+      name,
+      description: document.getElementById('prop-desc').value.trim(),
+      bundles: propBundles,
+    };
+    if (idx !== null) bom.proposals[idx] = proposal;
+    else bom.proposals.push(proposal);
+    saveData(data);
+    close();
+    onSave();
+  });
+}
+
 // ── Bundles / Kits ────────────────────────────────────────────────────────────
 
 function openBundlesModal() {
@@ -903,7 +1198,7 @@ function openBundlesModal() {
   );
 }
 
-function openBundleEditModal(bom, idx, onSave) {
+function openBundleEditModal(bom, idx, onSave, skipGlobalSave = false) {
   const existing = idx !== null ? bom.bundles[idx] : null;
   const coveredIds = new Set(existing?.coversItemIds || []);
 
@@ -978,7 +1273,7 @@ function openBundleEditModal(bom, idx, onSave) {
     };
     if (idx !== null) bom.bundles[idx] = bundle;
     else bom.bundles.push(bundle);
-    saveData(data);
+    if (!skipGlobalSave) saveData(data);
     close();
     onSave();
   });
