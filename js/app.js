@@ -157,6 +157,7 @@ let data = loadData();
 let activeBomId = null;
 let filterState = { fieldId: '', value: '', value2: '' };
 let searchQuery = '';
+let viewMode = localStorage.getItem('bom-view-mode') || 'list';
 
 const STATUS_LABEL = { needed: 'Need to order', ordered: 'Ordered', received: 'In stock' };
 const STATUS_ORDER = { received: 0, ordered: 1, needed: 2 };
@@ -312,24 +313,41 @@ function itemMatchesFilter(item) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function renderSidebar() {
-  const list = document.getElementById('bom-list');
-  if (!data.boms.length) {
-    list.innerHTML = `<p style="padding:12px 8px;font-size:0.75rem;color:var(--text-muted)">No BOMs yet.</p>`;
-    return;
-  }
-  list.innerHTML = data.boms.map(bom => {
-    const total = calcBomTotal(bom);
-    const active = bom.id === activeBomId ? ' active' : '';
-    return `<div class="bom-entry${active}" data-id="${bom.id}">
-      <div class="bom-entry-name">${esc(bom.name)}</div>
-      <div class="bom-entry-meta">${bom.items.length} item${bom.items.length !== 1 ? 's' : ''} · ${total}</div>
-    </div>`;
-  }).join('');
+function updateTopbarBomName() {
+  const bom = getActiveBom();
+  const el = document.getElementById('topbar-bom-name');
+  if (el) el.textContent = bom ? bom.name : 'Select BOM';
+}
 
-  list.querySelectorAll('.bom-entry').forEach(el =>
-    el.addEventListener('click', () => { activeBomId = el.dataset.id; renderAll(); })
+function openBomPickerModal() {
+  const html = `
+    <div class="modal-overlay" id="bom-picker-overlay">
+      <div class="modal" style="max-width:340px">
+        <div class="modal-header">
+          <h2>📋 BOMs</h2>
+          <button class="modal-close" id="bom-picker-close">✕</button>
+        </div>
+        <div class="modal-body" style="padding:8px">
+          ${data.boms.length ? data.boms.map(b => `
+            <div class="bom-entry${b.id === activeBomId ? ' active' : ''}" data-id="${b.id}">
+              <div class="bom-entry-name">${esc(b.name)}</div>
+              <div class="bom-entry-meta">${b.items.length} item${b.items.length !== 1 ? 's' : ''} · ${calcBomTotal(b)}</div>
+            </div>`).join('') : `<p style="padding:12px;font-size:0.78rem;color:var(--text-muted)">No BOMs yet.</p>`}
+        </div>
+        <div class="modal-footer">
+          <button class="header-btn primary" id="bom-picker-new">+ New BOM</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('bom-picker-overlay');
+  const close = () => overlay.remove();
+  document.getElementById('bom-picker-close').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelectorAll('.bom-entry').forEach(el =>
+    el.addEventListener('click', () => { activeBomId = el.dataset.id; close(); renderAll(); })
   );
+  document.getElementById('bom-picker-new').addEventListener('click', () => { close(); openBomModal(null); });
 }
 
 // ── BOM header + main ─────────────────────────────────────────────────────────
@@ -338,7 +356,7 @@ function renderBomHeader() {
   const bom = getActiveBom();
   const main = document.getElementById('main');
   if (!bom) {
-    main.innerHTML = `<div id="no-bom"><div class="icon">📋</div><h2>Select or create a BOM</h2><p>Use the sidebar to get started</p></div>`;
+    main.innerHTML = `<div id="no-bom"><div class="icon">📋</div><h2>No BOM selected</h2><p>Tap the BOM picker above to get started</p></div>`;
     return;
   }
 
@@ -393,6 +411,7 @@ function renderBomHeader() {
         <option value="price" ${filterState.sort==='price'?'selected':''}>Price: low–high</option>
         <option value="status" ${filterState.sort==='status'?'selected':''}>Status</option>
       </select>
+      <button id="view-toggle-btn" class="${viewMode === 'tile' ? 'active' : ''}" title="${viewMode === 'tile' ? 'List view' : 'Tile view'}">${viewMode === 'tile' ? '≡ List' : '⊞ Tiles'}</button>
     </div>
     <div id="items-area"></div>`;
 
@@ -411,6 +430,16 @@ function renderBomHeader() {
 
   document.getElementById('sort-select').addEventListener('change', e => {
     filterState.sort = e.target.value;
+    renderItems();
+  });
+
+  document.getElementById('view-toggle-btn').addEventListener('click', () => {
+    viewMode = viewMode === 'tile' ? 'list' : 'tile';
+    localStorage.setItem('bom-view-mode', viewMode);
+    const btn = document.getElementById('view-toggle-btn');
+    btn.textContent = viewMode === 'tile' ? '≡ List' : '⊞ Tiles';
+    btn.title = viewMode === 'tile' ? 'List view' : 'Tile view';
+    btn.classList.toggle('active', viewMode === 'tile');
     renderItems();
   });
 
@@ -461,7 +490,10 @@ function renderItems() {
     return;
   }
 
-  area.innerHTML = filtered.map(item => renderItemCard(item, bom)).join('');
+  area.classList.toggle('tile-view', viewMode === 'tile');
+  area.innerHTML = viewMode === 'tile'
+    ? filtered.map(item => renderItemTile(item, bom)).join('')
+    : filtered.map(item => renderItemCard(item, bom)).join('');
 
   area.querySelectorAll('.qty-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -470,13 +502,14 @@ function renderItems() {
       const delta = parseInt(btn.dataset.delta);
       item.quantity = Math.max(1, (item.quantity || 1) + delta);
       saveData(data);
-      // Update the display without full re-render
-      const card = btn.closest('.item-card');
+      // Update display without full re-render
+      const card = btn.closest('.item-card, .item-tile');
       if (card) {
         card.querySelector('.qty-val').textContent = item.quantity;
-        card.querySelector('.item-qty').textContent = `×${item.quantity}`;
+        const qtyDisplay = card.querySelector('.item-qty');
+        if (qtyDisplay) qtyDisplay.textContent = `×${item.quantity}`;
       }
-      renderSidebar(); // update totals
+      updateTopbarBomName();
     });
   });
 
@@ -593,6 +626,58 @@ function renderItemCard(item, bom) {
         <button class="item-edit-btn" data-id="${item.id}">Edit</button>
         <button class="item-copy-btn" data-id="${item.id}" title="Copy to another BOM">⎘</button>
         <button class="item-del-btn" data-id="${item.id}">Del</button>
+      </div>
+    </div>`;
+}
+
+function renderItemTile(item, bom) {
+  const prices = getPrices(item);
+  const cheapest = prices.length ? prices.reduce((a, b) => a.price < b.price ? a : b) : null;
+  const status = item.status || 'needed';
+  const bundle = coveredByBundle(item.id, bom);
+
+  const imgContent = item.imageUrl
+    ? `<img src="${esc(item.imageUrl)}" alt="" onerror="this.style.display='none'">`
+    : '📦';
+
+  let priceHtml = '';
+  if (bundle) {
+    priceHtml = `<span class="item-tile-price" title="Covered by bundle">📦</span>`;
+  } else if (cheapest) {
+    const sym = cheapest.currency;
+    const fromCode = codeOfSym(sym);
+    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    priceHtml = `<span class="item-tile-price">${conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${sym}${cheapest.price}`}</span>`;
+  }
+
+  const typeMeta = item.componentType
+    ? `<span class="type-badge" style="font-size:0.6rem;padding:1px 6px">${esc(item.componentType)}</span>`
+    : '';
+
+  return `
+    <div class="item-tile status-${status}">
+      <div class="item-tile-rect">
+        <div class="item-tile-top-row">
+          <div class="item-tile-img">${imgContent}</div>
+          <div class="item-tile-actions">
+            <button class="item-tile-btn edit item-edit-btn" data-id="${item.id}" title="Edit">✏</button>
+            <button class="item-tile-btn copy item-copy-btn" data-id="${item.id}" title="Copy to BOM">⎘</button>
+            <button class="item-tile-btn del item-del-btn" data-id="${item.id}" title="Delete">✕</button>
+          </div>
+        </div>
+        <div class="item-tile-qty-strip">
+          <button class="qty-btn" data-id="${item.id}" data-delta="-1">−</button>
+          <span class="qty-val">${item.quantity || 1}</span>
+          <button class="qty-btn" data-id="${item.id}" data-delta="1">+</button>
+        </div>
+      </div>
+      <div class="item-tile-info">
+        <div class="item-tile-name">${esc(item.name)}</div>
+        <div class="item-tile-meta">
+          ${typeMeta}
+          ${priceHtml}
+          <span class="status-badge status-${status}" style="font-size:0.58rem;padding:1px 6px">${STATUS_LABEL[status]}</span>
+        </div>
       </div>
     </div>`;
 }
@@ -2197,7 +2282,7 @@ function showToast(msg) {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
-function renderAll() { renderSidebar(); renderBomHeader(); }
+function renderAll() { updateTopbarBomName(); renderBomHeader(); }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -2217,11 +2302,10 @@ currencySelect.addEventListener('change', () => {
   updateRatesStatus();
 });
 
+document.getElementById('bom-picker-btn').addEventListener('click', openBomPickerModal);
 document.getElementById('new-bom-btn').addEventListener('click', () => openBomModal());
 document.getElementById('import-csv-btn').addEventListener('click', triggerCSVImport);
 document.getElementById('export-csv-btn').addEventListener('click', () => { const bom = getActiveBom(); if (bom) exportCSV(); else alert('Select a BOM first'); });
-document.getElementById('hide-sidebar-btn').addEventListener('click', () => document.body.classList.add('sidebar-hidden'));
-document.getElementById('show-sidebar-btn').addEventListener('click', () => document.body.classList.remove('sidebar-hidden'));
 if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
 checkShareParam();
