@@ -82,13 +82,27 @@ const SYM_TO_CODE = Object.fromEntries(
 function codeOfSym(sym) {
   if (!sym) return 'USD';
   const t = sym.trim();
-  return SYM_TO_CODE[t] || (() => {
-    // Try partial match — e.g. user typed 'S$' or 'RM'
-    for (const [code, s] of Object.entries(CURRENCY_SYMBOLS)) {
-      if (s.trim() === t) return code;
-    }
-    return null; // unknown symbol, can't convert
-  })();
+  if (SYM_TO_CODE[t]) return SYM_TO_CODE[t];             // symbol → code
+  if (CURRENCY_SYMBOLS[t.toUpperCase()]) return t.toUpperCase(); // already a code
+  for (const [code, s] of Object.entries(CURRENCY_SYMBOLS)) {
+    if (s.trim() === t) return code;
+  }
+  return null;
+}
+
+// Convert and format a price into the display currency.
+// Returns a plain string like "$12.50" or "₱999.00 → $17.80"
+function priceInDisplay(amount, currencySym, showOriginal = false) {
+  const amt = parseFloat(amount);
+  if (isNaN(amt)) return '';
+  const fromCode = codeOfSym(currencySym);
+  if (!fromCode) return `${currencySym}${amt.toFixed(2)}`;
+  const conv = toDisplay(amt, fromCode);
+  const main = `${conv.symbol}${conv.amount.toFixed(2)}`;
+  if (showOriginal && conv.converted) {
+    return `${main} <small style="opacity:.5">${currencySym}${amt.toFixed(2)}</small>`;
+  }
+  return main;
 }
 
 // Convert amount from one currency to display currency.
@@ -137,6 +151,7 @@ function loadData() {
     d.boms.forEach(bom => {
       if (!bom.bundles) bom.bundles = [];
       if (!bom.proposals) bom.proposals = [];
+      bom.bundles.forEach(b => { if (!b.id) b.id = uuid(); });
       bom.items.forEach(item => {
         if (typeof item.specs === 'string') { item.specsNotes = item.specs; item.specs = {}; }
         if (!item.specs) item.specs = {};
@@ -600,17 +615,7 @@ function renderItemCard(item, bom) {
     if (!d?.url) return '';
     const isCheap = cheapest?.platform === p ? ' cheapest' : '';
     const label = { amazon: '🟠 Amazon', lazada: '🔵 Lazada', aliexpress: '🔴 AliExpress' }[p];
-    let priceStr = '';
-    if (d.price) {
-      const sym = d.currency || '$';
-      const fromCode = codeOfSym(sym);
-      const conv = fromCode ? toDisplay(parseFloat(d.price), fromCode) : null;
-      if (conv && conv.converted) {
-        priceStr = ` · ${conv.symbol}${conv.amount.toFixed(2)} <small style="opacity:.6">(${sym}${d.price})</small>`;
-      } else {
-        priceStr = ` · ${sym}${d.price}`;
-      }
-    }
+    const priceStr = d.price ? ` · ${priceInDisplay(d.price, d.currency || '$')}` : '';
     return `<a class="platform-btn ${p}${isCheap}" href="${esc(d.url)}" target="_blank" rel="noopener">${label}${priceStr}</a>`;
   }).join('');
 
@@ -635,17 +640,9 @@ function renderItemCard(item, bom) {
   let bestPriceHtml;
   if (bundle && bundle.price) {
     const coversN = (bundle.coversItemIds || []).length;
-    const pHtml = formatBundlePrice(bundle, bom);
-    bestPriceHtml = `<div class="item-best-price" style="color:var(--amber)">${pHtml}</div><div class="item-best-price-label">bundle${coversN > 1 ? ` · ${coversN} items` : ''}</div>`;
+    bestPriceHtml = `<div class="item-best-price" style="color:var(--amber)">${priceInDisplay(bundle.price, bundle.currency || '$')}</div><div class="item-best-price-label">bundle${coversN > 1 ? ` · ${coversN} items` : ''}</div>`;
   } else if (cheapest) {
-    const sym = cheapest.currency;
-    const fromCode = codeOfSym(sym);
-    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
-    if (conv && conv.converted) {
-      bestPriceHtml = `<div class="item-best-price">${conv.symbol}${conv.amount.toFixed(2)}</div><div class="item-best-price-label">best · <span style="opacity:.6">${sym}${cheapest.price}</span></div>`;
-    } else {
-      bestPriceHtml = `<div class="item-best-price">${sym}${cheapest.price}</div><div class="item-best-price-label">best price</div>`;
-    }
+    bestPriceHtml = `<div class="item-best-price">${priceInDisplay(cheapest.price, cheapest.currency)}</div><div class="item-best-price-label">best price</div>`;
   } else {
     bestPriceHtml = `<div class="item-best-price" style="color:var(--text-muted)">—</div>`;
   }
@@ -653,7 +650,7 @@ function renderItemCard(item, bom) {
   const status = item.status || 'needed';
   const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
   const bundle = coveredByBundle(item.id, bom);
-  const bundlePriceHtml = bundle ? formatBundlePrice(bundle, bom) : '';
+  const bundlePriceHtml = bundle ? formatBundlePrice(bundle) : '';
   const bundleBadge = bundle
     ? `<span class="bundle-badge">📦 ${esc(bundle.name)}${bundlePriceHtml ? ` · ${bundlePriceHtml}` : ''}</span>`
     : '';
@@ -704,13 +701,10 @@ function renderItemTile(item, bom) {
 
   let priceHtml = '';
   if (bundle) {
-    const pHtml = formatBundlePrice(bundle, bom);
+    const pHtml = formatBundlePrice(bundle);
     priceHtml = `<span class="item-tile-price" style="color:var(--amber)">📦 ${pHtml}</span>`;
   } else if (cheapest) {
-    const sym = cheapest.currency;
-    const fromCode = codeOfSym(sym);
-    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
-    priceHtml = `<span class="item-tile-price">${conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${sym}${cheapest.price}`}</span>`;
+    priceHtml = `<span class="item-tile-price">${priceInDisplay(cheapest.price, cheapest.currency)}</span>`;
   }
 
   const typeMeta = item.componentType
@@ -1120,15 +1114,13 @@ function openCompareBomModal() {
       const bundle = coveredByBundle(item.id, bom);
       let priceStr = '';
       if (bundle?.price) {
-        priceStr = `<span style="color:var(--amber)">📦 ${formatBundlePrice(bundle, bom)}</span>`;
+        priceStr = `<span style="color:var(--amber)">📦 ${formatBundlePrice(bundle)}</span>`;
       } else {
         const prices = getPrices(item);
         if (prices.length) {
           const cheapest = prices.reduce((a, c) => a.price < c.price ? a : c);
-          const fromCode = codeOfSym(cheapest.currency);
-          const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
           const qty = item.quantity || 1;
-          const unitStr = conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${cheapest.currency}${cheapest.price}`;
+          const unitStr = priceInDisplay(cheapest.price, cheapest.currency);
           priceStr = `<span style="color:var(--green)">${unitStr}</span>${qty > 1 ? ` <small style="color:var(--text-muted);opacity:.7">×${qty}</small>` : ''}`;
         }
       }
@@ -1228,8 +1220,8 @@ function calcBomTotalRaw(bom) {
   for (const item of bom.items) {
     const bundle = coveredByBundle(item.id, bom);
     if (bundle) {
-      if (!bundleCounted.has(bundle.id) && bundle.price) {
-        bundleCounted.add(bundle.id);
+      if (!bundleCounted.has(bundle) && bundle.price) {
+        bundleCounted.add(bundle);
         hasAny = true;
         const fromCode = codeOfSym(bundle.currency || '$');
         const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
@@ -2018,27 +2010,21 @@ function coveredByBundle(itemId, bom) {
   return (bom.bundles || []).find(b => b.coversItemIds?.includes(itemId)) || null;
 }
 
-function formatBundlePrice(bundle, bom) {
+function formatBundlePrice(bundle) {
   if (!bundle?.price) return '';
-  const sym = bundle.currency || '$';
-  const fromCode = codeOfSym(sym);
-  const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
-  if (conv && conv.converted) {
-    return `${conv.symbol}${conv.amount.toFixed(2)}<small style="opacity:.55"> (${sym}${bundle.price})</small>`;
-  }
-  return `${sym}${bundle.price}`;
+  return priceInDisplay(bundle.price, bundle.currency || '$');
 }
 
 function calcBomTotal(bom) {
   const dc = getDisplayCurrency();
   let total = 0, hasAny = false, hasUnconverted = false;
-  const bundleCounted = new Set();
+  const bundleCounted = new Set(); // keyed by object reference
 
   for (const item of bom.items) {
     const bundle = coveredByBundle(item.id, bom);
     if (bundle) {
-      if (!bundleCounted.has(bundle.id) && bundle.price) {
-        bundleCounted.add(bundle.id);
+      if (!bundleCounted.has(bundle) && bundle.price) {
+        bundleCounted.add(bundle);
         hasAny = true;
         const fromCode = codeOfSym(bundle.currency || '$');
         const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
