@@ -161,6 +161,7 @@ function loadData() {
         ['amazon','lazada','aliexpress','ebay','shopee'].forEach(p => {
           if (!item.platforms[p]) item.platforms[p] = {};
         });
+        if (item.isSupply === undefined) item.isSupply = false;
       });
     });
     return d;
@@ -268,12 +269,56 @@ function checkSpecCompat(specA, specB, field) {
   return 'unknown';
 }
 
+// Directional supply→consumer check.
+// Supply output range should be *contained within* consumer's acceptable input range (voltage).
+// Supply capacity should be *≥* consumer's requirement (current, wattage).
+function checkSupplyCompat(supplySpec, consumerSpec, field) {
+  if (!supplySpec || !consumerSpec) return 'unknown';
+
+  if (field.type === 'text') return checkSpecCompat(supplySpec, consumerSpec, field);
+
+  const toRange = s => {
+    if (s.min !== undefined && s.min !== '' && s.max !== undefined && s.max !== '')
+      return { lo: parseFloat(s.min), hi: parseFloat(s.max) };
+    const v = parseFloat(s.value);
+    return isNaN(v) ? null : { lo: v, hi: v };
+  };
+
+  if (field.type === 'range') {
+    // Voltage-style: supply output range must sit within consumer's accepted range.
+    const sR = toRange(supplySpec), cR = toRange(consumerSpec);
+    if (!sR || !cR || isNaN(sR.lo) || isNaN(cR.lo)) return 'unknown';
+    if (sR.lo >= cR.lo && sR.hi <= cR.hi) return 'ok';            // fully contained
+    if (sR.hi >= cR.lo && sR.lo <= cR.hi) return 'warn';          // partial overlap
+    return 'mismatch';                                              // no overlap
+  }
+
+  if (field.type === 'value') {
+    // Current/wattage-style: supply capacity must meet consumer's draw.
+    const sVal = parseFloat(supplySpec.value);
+    const cVal = parseFloat(consumerSpec.value);
+    if (isNaN(sVal) || isNaN(cVal)) return 'unknown';
+    if (sVal >= cVal) return sVal < cVal * 1.2 ? 'warn' : 'ok';   // warn if <20% headroom
+    return 'mismatch';
+  }
+
+  return 'unknown';
+}
+
 function checkItemCompat(itemA, itemB) {
+  const aSupply = !!itemA.isSupply, bSupply = !!itemB.isSupply;
+  const supplyToConsumer = aSupply && !bSupply; // A powers B
+  const consumerToSupply = !aSupply && bSupply; // B powers A
+
   return data.specFields
     .map(field => {
       const sA = itemA.specs?.[field.id], sB = itemB.specs?.[field.id];
       if (!hasSpecValue(sA, field) || !hasSpecValue(sB, field)) return null;
-      return { field, status: checkSpecCompat(sA, sB, field) };
+      let status;
+      if (supplyToConsumer) status = checkSupplyCompat(sA, sB, field);
+      else if (consumerToSupply) status = checkSupplyCompat(sB, sA, field);
+      else status = checkSpecCompat(sA, sB, field);
+      return { field, status };
     })
     .filter(Boolean);
 }
@@ -697,8 +742,11 @@ function renderItemCard(item, bom) {
     const results = checkItemCompat(item, linkedItem);
     const cs = overallStatus(results);
     const details = results.map(r => `${r.field.name}: ${COMPAT_ICON[r.status]}`).join(' · ') || 'No shared specs';
+    const isSupplyLink = !!item.isSupply !== !!linkedItem.isSupply;
+    const supplyVerb = { ok: 'Powers', warn: 'Marginal power', mismatch: 'Cannot power', unknown: 'Linked' };
+    const chipLabel = isSupplyLink ? `⚡ ${supplyVerb[cs]}` : COMPAT_LABEL[cs];
     return `<div class="compat-chip" style="border-color:${COMPAT_COLOR[cs]}22;color:${COMPAT_COLOR[cs]}" title="${esc(details)}">
-      ${COMPAT_ICON[cs]} ${esc(linkedItem.name)} <span style="font-size:0.65rem;opacity:0.7">${esc(details)}</span>
+      ${COMPAT_ICON[cs]} ${esc(linkedItem.name)} <span style="font-size:0.65rem;opacity:0.7">${chipLabel}${details !== 'No shared specs' ? ' · ' + esc(details) : ''}</span>
     </div>`;
   }).join('');
 
@@ -716,9 +764,10 @@ function renderItemCard(item, bom) {
   const bundlePriceHtml = bundle ? formatBundlePrice(bundle) : '';
   const bundleBadge = bundle ? `<span class="bundle-badge">📦 ${esc(bundle.name)}${bundlePriceHtml ? ` · ${bundlePriceHtml}` : ''}</span>` : '';
   const typeBadge = item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '';
+  const supplyBadge = item.isSupply ? `<span class="supply-badge">⚡ Supply</span>` : '';
   const unpricedBadge = !prices.length && !bundle ? `<span class="unpriced-badge">⚠ no price</span>` : '';
   const stockBadge = item.stock > 0 ? `<span class="stock-badge">Stock: ${item.stock}</span>` : '';
-  const extraBadges = [unpricedBadge, stockBadge, priceWarnHtml].filter(Boolean).join('');
+  const extraBadges = [supplyBadge, unpricedBadge, stockBadge, priceWarnHtml].filter(Boolean).join('');
   const updatedHtml = item.updatedAt ? `<div style="font-size:0.6rem;color:var(--text-muted);margin-top:4px">Updated ${formatRelTime(item.updatedAt)}</div>` : '';
 
   return `
@@ -779,6 +828,7 @@ function renderItemTile(item, bom) {
     ? `<span class="type-badge" style="font-size:0.6rem;padding:1px 6px">${esc(item.componentType)}</span>`
     : '';
   const unpricedTile = !getPrices(item).length && !bundle ? `<span class="unpriced-badge">⚠</span>` : '';
+  const supplyTile = item.isSupply ? `<span class="supply-badge">⚡</span>` : '';
 
   return `
     <div class="item-tile status-${status}" data-item-id="${item.id}">
@@ -801,6 +851,7 @@ function renderItemTile(item, bom) {
       <div class="item-tile-info">
         <div class="item-tile-name">${esc(item.name)}</div>
         <div class="item-tile-meta">
+          ${supplyTile}
           ${typeMeta}
           ${priceHtml}
           ${unpricedTile}
@@ -989,6 +1040,12 @@ function openItemModal(existing = null) {
                 <option value="ordered"  ${existing?.status==='ordered'              ? 'selected' : ''}>Ordered</option>
                 <option value="received" ${existing?.status==='received'             ? 'selected' : ''}>In stock</option>
               </select>
+            </div>
+            <div class="form-group" style="flex:none;align-self:flex-end;padding-bottom:2px">
+              <label class="supply-checkbox-label">
+                <input type="checkbox" id="item-is-supply" ${existing?.isSupply ? 'checked' : ''}>
+                ⚡ Supply
+              </label>
             </div>
           </div>
 
@@ -1184,6 +1241,7 @@ function buildItemFromModal(existing) {
     stock: parseInt(document.getElementById('item-stock')?.value) || 0,
     componentType: pf('item-type'),
     status: document.getElementById('item-status')?.value || 'needed',
+    isSupply: !!(document.getElementById('item-is-supply')?.checked),
     imageUrl: pf('item-img'),
     specs,
     specsNotes: document.getElementById('item-notes')?.value.trim() || '',
