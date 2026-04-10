@@ -432,7 +432,7 @@ function renderBomHeader() {
   document.getElementById('edit-bom-btn').addEventListener('click', () => openBomModal(bom));
   document.getElementById('add-item-btn').addEventListener('click', () => openItemModal(null));
   document.getElementById('manage-bundles-btn').addEventListener('click', openBundlesModal);
-  document.getElementById('compare-btn').addEventListener('click', openCompareModal);
+  document.getElementById('compare-btn').addEventListener('click', openCompareBomModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
@@ -1103,173 +1103,95 @@ function buildItemFromModal(existing) {
   };
 }
 
-// ── Proposals ────────────────────────────────────────────────────────────────
+// ── Cross-BOM Compare ────────────────────────────────────────────────────────
 
-function resolveItemSource(item, bundles, itemOverrides) {
-  // Returns { type: 'bundle'|'price'|'excluded'|'none', bundle?, chosen? }
-  const bundle = (bundles || []).find(b => b.coversItemIds?.includes(item.id));
-  if (bundle) return { type: 'bundle', bundle };
-  const override = (itemOverrides || {})[item.id];
-  if (override === 'excluded') return { type: 'excluded' };
-  const prices = getPrices(item);
-  if (!prices.length) return { type: 'none' };
-  let chosen = override && override !== 'cheapest'
-    ? prices.find(p => p.platform === override)
-    : null;
-  if (!chosen) chosen = prices.reduce((a, b) => a.price < b.price ? a : b);
-  return { type: 'price', chosen };
-}
+function openCompareBomModal() {
+  if (data.boms.length < 2) {
+    alert('You need at least 2 BOMs to compare. Create another BOM first.');
+    return;
+  }
 
-function calcProposalTotal(bom, bundles, itemOverrides) {
-  const dc = getDisplayCurrency();
-  let total = 0, hasAny = false, hasUnconverted = false;
-  const bundleCounted = new Set();
+  let selectedIds = new Set(activeBomId ? [activeBomId] : [data.boms[0].id]);
 
-  for (const item of bom.items) {
-    const src = resolveItemSource(item, bundles, itemOverrides);
-    if (src.type === 'excluded') continue;
-    if (src.type === 'bundle') {
-      const b = src.bundle;
-      if (!bundleCounted.has(b.id) && b.price) {
-        bundleCounted.add(b.id);
-        hasAny = true;
-        const fromCode = codeOfSym(b.currency || '$');
-        const conv = fromCode ? toDisplay(parseFloat(b.price), fromCode) : null;
-        if (conv) total += conv.amount;
-        else { total += parseFloat(b.price); hasUnconverted = true; }
+  function bomPriceCell(bom, type) {
+    const items = bom.items.filter(i => (i.componentType || '') === type);
+    if (!items.length) return `<span style="color:var(--text-muted)">—</span>`;
+    return items.map(item => {
+      const bundle = coveredByBundle(item.id, bom);
+      let priceStr = '';
+      if (bundle?.price) {
+        priceStr = `<span style="color:var(--amber)">📦 ${formatBundlePrice(bundle, bom)}</span>`;
+      } else {
+        const prices = getPrices(item);
+        if (prices.length) {
+          const cheapest = prices.reduce((a, c) => a.price < c.price ? a : c);
+          const fromCode = codeOfSym(cheapest.currency);
+          const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+          const qty = item.quantity || 1;
+          const unitStr = conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${cheapest.currency}${cheapest.price}`;
+          priceStr = `<span style="color:var(--green)">${unitStr}</span>${qty > 1 ? ` <small style="color:var(--text-muted);opacity:.7">×${qty}</small>` : ''}`;
+        }
       }
-      continue;
-    }
-    if (src.type === 'none') continue;
-    const { chosen } = src;
-    hasAny = true;
-    const fromCode = codeOfSym(chosen.currency);
-    const conv = fromCode ? toDisplay(chosen.price, fromCode) : null;
-    if (conv) total += conv.amount * (item.quantity || 1);
-    else { total += chosen.price * (item.quantity || 1); hasUnconverted = true; }
+      const statusDot = { received: '🟢', ordered: '🟡', needed: '🔴' }[item.status || 'needed'] || '';
+      return `<div style="padding:2px 0;font-size:0.78rem">${statusDot} <strong>${esc(item.name)}</strong>${priceStr ? ' · ' + priceStr : ''}</div>`;
+    }).join('');
   }
-  if (!hasAny) return null;
-  return { display: (hasUnconverted ? '~' : '') + symOf(dc) + total.toFixed(2), raw: total };
-}
-
-function cellForItem(item, bundles, itemOverrides) {
-  const src = resolveItemSource(item, bundles, itemOverrides);
-  if (src.type === 'bundle') {
-    const b = src.bundle;
-    const link = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none">📦 ${esc(b.name)}</a>` : `📦 ${esc(b.name)}`;
-    return { html: `<span class="compare-bundle-cell">${link}</span>`, type: 'bundle' };
-  }
-  if (src.type === 'excluded') return { html: `<span class="cmp-excluded">Excluded</span>`, type: 'excluded' };
-  if (src.type === 'none')     return { html: `<span style="color:var(--text-muted)">—</span>`, type: 'none' };
-
-  const { chosen } = src;
-  const sym = chosen.currency;
-  const fromCode = codeOfSym(sym);
-  const conv = fromCode ? toDisplay(chosen.price, fromCode) : null;
-  const qty = item.quantity || 1;
-  const unitStr = conv?.converted ? `${conv.symbol}${conv.amount.toFixed(2)}` : `${sym}${chosen.price}`;
-  const totalStr = qty > 1
-    ? ` <span style="color:var(--text-muted);font-size:0.7rem">×${qty} = ${conv?.converted ? conv.symbol + (conv.amount * qty).toFixed(2) : sym + (parseFloat(chosen.price) * qty).toFixed(2)}</span>`
-    : '';
-  const label = { amazon: '🟠', lazada: '🔵', aliexpress: '🔴' }[chosen.platform] || '';
-  const urlWrap = chosen.url
-    ? `<a href="${esc(chosen.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${label} ${unitStr}</a>`
-    : `${label} ${unitStr}`;
-  return { html: urlWrap + totalStr, type: 'price' };
-}
-
-function openCompareModal() {
-  const bom = getActiveBom();
-  if (!bom) return;
-  if (!bom.proposals) bom.proposals = [];
 
   function buildTable() {
-    // Columns: "Current BOM" + each proposal
-    const cols = [
-      { name: 'Current BOM', bundles: bom.bundles || [], itemOverrides: {}, isBase: true },
-      ...bom.proposals.map(p => ({ name: p.name, bundles: p.bundles || [], itemOverrides: p.itemOverrides || {}, proposal: p }))
-    ];
+    const boms = [...selectedIds].map(id => data.boms.find(b => b.id === id)).filter(Boolean);
+    if (boms.length < 2) return `<p style="font-size:0.82rem;color:var(--text-muted);padding:16px">Select at least 2 BOMs to compare.</p>`;
+
+    const allTypes = new Set();
+    boms.forEach(b => b.items.forEach(i => allTypes.add(i.componentType || '')));
+    const sortedTypes = [...allTypes].sort((a, b) => (!a ? 1 : !b ? -1 : a.localeCompare(b)));
 
     const header = `<tr>
       <th class="cmp-type-col">Type</th>
-      <th class="cmp-item-col">Item</th>
-      <th class="cmp-qty-col">Qty</th>
-      ${cols.map((c, i) => `<th class="cmp-proposal-col">
-        ${esc(c.name)}
-        ${!c.isBase ? `<button class="cmp-edit-btn header-btn" data-idx="${i - 1}" style="margin-left:6px;font-size:0.65rem;padding:2px 7px">Edit</button>` : ''}
-      </th>`).join('')}
+      ${boms.map(b => `<th class="cmp-proposal-col">${esc(b.name)}<br><small style="font-weight:400;color:var(--text-muted)">${b.items.length} item${b.items.length !== 1 ? 's' : ''}</small></th>`).join('')}
     </tr>`;
 
-    // Sort items by componentType so same types are grouped
-    const sortedItems = [...bom.items].sort((a, b) => (a.componentType || '').localeCompare(b.componentType || ''));
+    const rows = sortedTypes.map(type => `<tr>
+      <td class="cmp-type-col">${type ? `<span class="type-badge">${esc(type)}</span>` : `<span style="color:var(--text-muted);font-size:0.7rem">—</span>`}</td>
+      ${boms.map(b => `<td class="cmp-data-col">${bomPriceCell(b, type)}</td>`).join('')}
+    </tr>`).join('');
 
-    const rows = sortedItems.map(item => {
-      const cells = cols.map(c => cellForItem(item, c.bundles, c.itemOverrides));
-      return `<tr>
-        <td class="cmp-type-col">${item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '<span style="color:var(--text-muted);font-size:0.7rem">—</span>'}</td>
-        <td class="cmp-item-col"><span style="font-weight:600">${esc(item.name)}</span></td>
-        <td class="cmp-qty-col" style="text-align:center;color:var(--text-muted)">${item.quantity || 1}</td>
-        ${cells.map(c => `<td class="cmp-data-col">${c.html}</td>`).join('')}
-      </tr>`;
+    // Totals with cheapest highlighted
+    const totals = boms.map(b => {
+      const t = calcBomTotal(b);
+      const raw = calcBomTotalRaw(b);
+      return { display: t, raw };
+    });
+    const minRaw = Math.min(...totals.map(t => t.raw ?? Infinity));
+    const totalCells = totals.map(t => {
+      const isBest = t.raw !== null && t.raw === minRaw && totals.filter(x => x.raw === minRaw).length < totals.length;
+      return `<td class="cmp-data-col cmp-total-cell${isBest ? ' cmp-best' : ''}">${t.display}${isBest ? ' ✓' : ''}</td>`;
     }).join('');
 
-    const totals = cols.map(c => {
-      const t = calcProposalTotal(bom, c.bundles);
-      return `<td class="cmp-data-col cmp-total-cell">${t ? t.display : '—'}</td>`;
-    });
-
-    // Find cheapest proposal total
-    const rawTotals = cols.map(c => { const t = calcProposalTotal(bom, c.bundles, c.itemOverrides); return t ? t.raw : Infinity; });
-    const minRaw = Math.min(...rawTotals.filter(v => v !== Infinity));
-    const totalCells = cols.map((c, i) => {
-      const t = calcProposalTotal(bom, c.bundles, c.itemOverrides);
-      const isBest = t && t.raw === minRaw && rawTotals.filter(v => v === minRaw).length < cols.length;
-      return `<td class="cmp-data-col cmp-total-cell${isBest ? ' cmp-best' : ''}">${t ? t.display : '—'}${isBest ? ' ✓' : ''}</td>`;
-    });
-
-    return `
-      <div class="cmp-scroll">
-        <table class="cmp-table">
-          <thead>${header}</thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr>
-            <td class="cmp-item-col" style="font-weight:700">Total</td>
-            <td class="cmp-qty-col"></td>
-            ${totalCells.join('')}
-          </tr></tfoot>
-        </table>
-      </div>`;
+    return `<div class="cmp-scroll"><table class="cmp-table">
+      <thead>${header}</thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td class="cmp-type-col" style="font-weight:700;font-size:0.8rem">Total</td>${totalCells}</tr></tfoot>
+    </table></div>`;
   }
 
-  function renderProposalList() {
-    if (!bom.proposals.length) return `<p style="font-size:0.78rem;color:var(--text-muted)">No proposals yet — the Current BOM is your baseline. Add proposals to compare alternatives.</p>`;
-    return bom.proposals.map((p, i) => `
-      <div class="bundle-row">
-        <div class="bundle-row-info">
-          <div class="bundle-row-name">${esc(p.name)}</div>
-          <div class="bundle-row-meta">${p.description ? esc(p.description) + ' · ' : ''}${p.bundles?.length || 0} bundle(s)</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          <button class="header-btn prop-edit-btn" data-idx="${i}">Edit</button>
-          <button class="item-del-btn prop-del-btn" data-idx="${i}">Del</button>
-        </div>
-      </div>`).join('');
-  }
+  const checkboxes = data.boms.map(b => `
+    <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-radius:8px;border:1px solid ${selectedIds.has(b.id) ? 'var(--accent)' : 'var(--border)'};background:${selectedIds.has(b.id) ? 'var(--accent-dim)' : 'transparent'};margin-bottom:6px;transition:all .15s">
+      <input type="checkbox" name="cmp-bom" value="${b.id}" ${selectedIds.has(b.id) ? 'checked' : ''} style="accent-color:var(--accent)">
+      <span style="font-weight:600;font-size:0.85rem">${esc(b.name)}</span>
+      <span style="font-size:0.72rem;color:var(--text-muted);margin-left:auto">${b.items.length} items · ${calcBomTotal(b)}</span>
+    </label>`).join('');
 
   const html = `
     <div class="modal-overlay" id="modal-overlay">
       <div class="modal" style="max-width:92vw;width:92vw">
         <div class="modal-header">
-          <h2>⚖ Compare Proposals</h2>
+          <h2>⚖ Compare BOMs</h2>
           <button class="modal-close" id="modal-close">✕</button>
         </div>
         <div class="modal-body" style="padding-bottom:0">
-          <div id="proposals-mgmt" style="margin-bottom:16px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <span style="font-size:0.78rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em">Proposals</span>
-              <button class="header-btn primary" id="add-proposal-btn" style="font-size:0.78rem;padding:5px 12px">+ New Proposal</button>
-            </div>
-            <div id="proposal-list">${renderProposalList()}</div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Select BOMs to compare</div>
+            ${checkboxes}
           </div>
           <div id="compare-table-wrap">${buildTable()}</div>
         </div>
@@ -1281,171 +1203,49 @@ function openCompareModal() {
 
   document.body.insertAdjacentHTML('beforeend', html);
   const overlay = document.getElementById('modal-overlay');
-  const close = () => { overlay.remove(); renderAll(); };
+  const close = () => overlay.remove();
   document.getElementById('modal-close').addEventListener('click', close);
   document.getElementById('modal-close2').addEventListener('click', close);
 
-  function rebind() {
-    document.getElementById('proposal-list').innerHTML = renderProposalList();
-    document.getElementById('compare-table-wrap').innerHTML = buildTable();
-    document.querySelectorAll('.prop-del-btn').forEach(btn =>
-      btn.addEventListener('click', () => {
-        bom.proposals.splice(parseInt(btn.dataset.idx), 1);
-        saveData(data); rebind();
-      })
-    );
-    document.querySelectorAll('.prop-edit-btn, .cmp-edit-btn').forEach(btn =>
-      btn.addEventListener('click', () =>
-        openProposalEditModal(bom, parseInt(btn.dataset.idx), rebind)
-      )
-    );
-  }
-  rebind();
-
-  document.getElementById('add-proposal-btn').addEventListener('click', () =>
-    openProposalEditModal(bom, null, rebind)
-  );
+  overlay.querySelectorAll('input[name="cmp-bom"]').forEach(cb => {
+    cb.addEventListener('change', e => {
+      if (e.target.checked) selectedIds.add(e.target.value);
+      else selectedIds.delete(e.target.value);
+      // Update label styling
+      overlay.querySelectorAll('input[name="cmp-bom"]').forEach(c => {
+        const label = c.closest('label');
+        label.style.borderColor = c.checked ? 'var(--accent)' : 'var(--border)';
+        label.style.background = c.checked ? 'var(--accent-dim)' : 'transparent';
+      });
+      document.getElementById('compare-table-wrap').innerHTML = buildTable();
+    });
+  });
 }
 
-function openProposalEditModal(bom, idx, onSave) {
-  const existing = idx !== null ? bom.proposals[idx] : null;
-
-  const html = `
-    <div class="modal-overlay" id="modal-overlay-proposal" style="z-index:200">
-      <div class="modal" style="max-width:600px">
-        <div class="modal-header">
-          <h2>${existing ? 'Edit Proposal' : 'New Proposal'}</h2>
-          <button class="modal-close" id="prop-close">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Proposal Name</label>
-              <input type="text" id="prop-name" placeholder="e.g. Kit approach" value="${esc(existing?.name || '')}">
-            </div>
-          </div>
-          <div class="form-group">
-            <label>Description (optional)</label>
-            <input type="text" id="prop-desc" placeholder="Short note about this approach" value="${esc(existing?.description || '')}">
-          </div>
-
-          <div style="display:flex;align-items:center;justify-content:space-between;margin:18px 0 8px">
-            <span class="modal-section-title" style="margin:0">Bundles / Kits</span>
-            <button class="header-btn primary" id="prop-add-bundle" style="font-size:0.75rem;padding:4px 10px">+ Add Bundle</button>
-          </div>
-          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Items in a bundle use the bundle price. All other items fall back to the source you choose below.</p>
-          <div id="prop-bundle-list"></div>
-
-          <div class="modal-section-title" style="margin-top:20px">Individual Item Sources</div>
-          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:10px">Choose which store to use per item, or exclude it from this proposal entirely.</p>
-          <div id="prop-item-sources"></div>
-        </div>
-        <div class="modal-footer">
-          <button class="header-btn" id="prop-cancel">Cancel</button>
-          <button class="header-btn primary" id="prop-save">${existing ? 'Save' : 'Create Proposal'}</button>
-        </div>
-      </div>
-    </div>`;
-
-  document.body.insertAdjacentHTML('beforeend', html);
-  const overlay = document.getElementById('modal-overlay-proposal');
-  const close = () => overlay.remove();
-  document.getElementById('prop-close').addEventListener('click', close);
-  document.getElementById('prop-cancel').addEventListener('click', close);
-  document.getElementById('prop-name').focus();
-
-  let propBundles = JSON.parse(JSON.stringify(existing?.bundles || []));
-  // itemOverrides: map of itemId → 'cheapest'|'amazon'|'lazada'|'aliexpress'|'excluded'
-  let propOverrides = JSON.parse(JSON.stringify(existing?.itemOverrides || {}));
-
-  function renderPropBundles() {
-    const el = document.getElementById('prop-bundle-list');
-    if (!propBundles.length) {
-      el.innerHTML = `<p style="font-size:0.78rem;color:var(--text-muted);padding:4px 0">No bundles yet.</p>`;
-    } else {
-      el.innerHTML = propBundles.map((b, i) => {
-        const covered = (b.coversItemIds || []).map(id => bom.items.find(it => it.id === id)?.name).filter(Boolean);
-        return `<div class="bundle-row">
-          <div class="bundle-row-info">
-            <div class="bundle-row-name">${esc(b.name)}</div>
-            <div class="bundle-row-meta">${b.currency || '$'}${b.price || '?'} · covers: ${covered.length ? covered.map(esc).join(', ') : 'none'}</div>
-          </div>
-          <div style="display:flex;gap:6px;flex-shrink:0">
-            <button class="header-btn pb-edit" data-i="${i}">Edit</button>
-            <button class="item-del-btn pb-del" data-i="${i}">Del</button>
-          </div>
-        </div>`;
-      }).join('');
-      el.querySelectorAll('.pb-del').forEach(btn =>
-        btn.addEventListener('click', () => { propBundles.splice(parseInt(btn.dataset.i), 1); renderPropBundles(); renderItemSources(); })
-      );
-      el.querySelectorAll('.pb-edit').forEach(btn =>
-        btn.addEventListener('click', () => openBundleEditModal({ items: bom.items, bundles: propBundles }, parseInt(btn.dataset.i), () => { renderPropBundles(); renderItemSources(); }, true))
-      );
-    }
-    renderItemSources();
-  }
-
-  function renderItemSources() {
-    const el = document.getElementById('prop-item-sources');
-    const coveredIds = new Set(propBundles.flatMap(b => b.coversItemIds || []));
-    const rows = bom.items.map(item => {
-      const inBundle = coveredIds.has(item.id);
-      if (inBundle) {
-        const b = propBundles.find(b => b.coversItemIds?.includes(item.id));
-        return `<div class="prop-source-row">
-          <span class="prop-source-name">${esc(item.name)}</span>
-          <span class="prop-source-bundle">📦 ${esc(b?.name || 'bundle')}</span>
-        </div>`;
+function calcBomTotalRaw(bom) {
+  const bundleCounted = new Set();
+  let total = 0, hasAny = false;
+  for (const item of bom.items) {
+    const bundle = coveredByBundle(item.id, bom);
+    if (bundle) {
+      if (!bundleCounted.has(bundle.id) && bundle.price) {
+        bundleCounted.add(bundle.id);
+        hasAny = true;
+        const fromCode = codeOfSym(bundle.currency || '$');
+        const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
+        total += conv ? conv.amount : parseFloat(bundle.price);
       }
-      const prices = getPrices(item);
-      const override = propOverrides[item.id] || 'cheapest';
-      const opts = [
-        { val: 'cheapest',   label: '★ Cheapest' },
-        { val: 'amazon',     label: '🟠 Amazon',     disabled: !prices.find(p => p.platform === 'amazon') },
-        { val: 'lazada',     label: '🔵 Lazada',     disabled: !prices.find(p => p.platform === 'lazada') },
-        { val: 'aliexpress', label: '🔴 AliExpress', disabled: !prices.find(p => p.platform === 'aliexpress') },
-        { val: 'excluded',   label: '✕ Exclude' },
-      ].filter(o => !o.disabled || o.val === override);
-      return `<div class="prop-source-row">
-        <span class="prop-source-name">${esc(item.name)}</span>
-        <select class="prop-source-select" data-item-id="${item.id}">
-          ${opts.map(o => `<option value="${o.val}" ${override === o.val ? 'selected' : ''}>${o.label}</option>`).join('')}
-        </select>
-      </div>`;
-    }).join('');
-    el.innerHTML = rows || `<p style="font-size:0.78rem;color:var(--text-muted)">No items in this BOM yet.</p>`;
-    el.querySelectorAll('.prop-source-select').forEach(sel =>
-      sel.addEventListener('change', () => {
-        propOverrides[sel.dataset.itemId] = sel.value;
-      })
-    );
+      continue;
+    }
+    const prices = getPrices(item);
+    if (!prices.length) continue;
+    const cheapest = prices.reduce((a, b) => a.price < b.price ? a : b);
+    hasAny = true;
+    const fromCode = codeOfSym(cheapest.currency);
+    const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
+    total += (conv ? conv.amount : cheapest.price) * (item.quantity || 1);
   }
-
-  renderPropBundles();
-
-  document.getElementById('prop-add-bundle').addEventListener('click', () =>
-    openBundleEditModal({ items: bom.items, bundles: propBundles }, null, () => { renderPropBundles(); renderItemSources(); }, true)
-  );
-
-  document.getElementById('prop-save').addEventListener('click', () => {
-    const name = document.getElementById('prop-name').value.trim();
-    if (!name) return alert('Name required');
-    // Strip 'cheapest' defaults to keep storage lean
-    const cleanOverrides = Object.fromEntries(Object.entries(propOverrides).filter(([, v]) => v !== 'cheapest'));
-    const proposal = {
-      id: existing?.id || uuid(),
-      name,
-      description: document.getElementById('prop-desc').value.trim(),
-      bundles: propBundles,
-      itemOverrides: cleanOverrides,
-    };
-    if (idx !== null) bom.proposals[idx] = proposal;
-    else bom.proposals.push(proposal);
-    saveData(data);
-    close();
-    onSave();
-  });
+  return hasAny ? total : null;
 }
 
 // ── URL Auto-fill ─────────────────────────────────────────────────────────────
@@ -2302,11 +2102,9 @@ function checkShareParam() {
     const suffix = exists ? ` (already have "${bom.name}" — will import as copy)` : '';
 
     const bundleCount = (bom.bundles || []).length;
-    const propCount = (bom.proposals || []).length;
     const details = [
       `${bom.items.length} item(s)`,
       bundleCount ? `${bundleCount} bundle(s)` : '',
-      propCount ? `${propCount} proposal(s)` : '',
     ].filter(Boolean).join(', ');
     if (!confirm(`Import shared BOM: "${bom.name}"?${suffix}\n\n${details}`)) {
       history.replaceState(null, '', location.pathname);
@@ -2328,11 +2126,8 @@ function checkShareParam() {
 
     const remapBundle = b => { b.id = uuid(); b.coversItemIds = remapIds(b.coversItemIds); };
     (bom.bundles || []).forEach(remapBundle);
-    (bom.proposals || []).forEach(p => { p.id = uuid(); (p.bundles || []).forEach(remapBundle); });
 
     if (!bom.bundles) bom.bundles = [];
-    if (!bom.proposals) bom.proposals = [];
-
     data.boms.push(bom);
     activeBomId = bom.id;
     saveData(data);
