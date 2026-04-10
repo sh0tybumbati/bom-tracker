@@ -162,6 +162,9 @@ function loadData() {
           if (!item.platforms[p]) item.platforms[p] = {};
         });
         if (item.isSupply === undefined) item.isSupply = false;
+        // Migrate legacy item.specs → inputSpecs / outputSpecs
+        if (!item.inputSpecs)  item.inputSpecs  = item.isSupply ? {} : { ...item.specs };
+        if (!item.outputSpecs) item.outputSpecs = item.isSupply ? { ...item.specs } : {};
       });
     });
     return d;
@@ -306,21 +309,37 @@ function checkSupplyCompat(supplySpec, consumerSpec, field) {
 }
 
 function checkItemCompat(itemA, itemB) {
-  const aSupply = !!itemA.isSupply, bSupply = !!itemB.isSupply;
-  const supplyToConsumer = aSupply && !bSupply; // A powers B
-  const consumerToSupply = !aSupply && bSupply; // B powers A
+  return data.specFields.map(field => {
+    const aIn  = itemA.inputSpecs?.[field.id];
+    const aOut = itemA.outputSpecs?.[field.id];
+    const bIn  = itemB.inputSpecs?.[field.id];
+    const bOut = itemB.outputSpecs?.[field.id];
+    const hv = (s) => hasSpecValue(s, field);
 
-  return data.specFields
-    .map(field => {
-      const sA = itemA.specs?.[field.id], sB = itemB.specs?.[field.id];
-      if (!hasSpecValue(sA, field) || !hasSpecValue(sB, field)) return null;
-      let status;
-      if (supplyToConsumer) status = checkSupplyCompat(sA, sB, field);
-      else if (consumerToSupply) status = checkSupplyCompat(sB, sA, field);
-      else status = checkSpecCompat(sA, sB, field);
-      return { field, status };
-    })
-    .filter(Boolean);
+    // A's output feeds B's input → directional supply check
+    if (hv(aOut) && hv(bIn))
+      return { field, status: checkSupplyCompat(aOut, bIn, field), dir: 'a→b' };
+
+    // B's output feeds A's input → directional supply check
+    if (hv(bOut) && hv(aIn))
+      return { field, status: checkSupplyCompat(bOut, aIn, field), dir: 'b→a' };
+
+    // Both have input specs only → symmetric requirement match
+    if (hv(aIn) && hv(bIn))
+      return { field, status: checkSpecCompat(aIn, bIn, field), dir: 'sym' };
+
+    // Both have output specs only → symmetric capability match
+    if (hv(aOut) && hv(bOut))
+      return { field, status: checkSpecCompat(aOut, bOut, field), dir: 'sym' };
+
+    // Legacy fallback: old item.specs with isSupply flag
+    const sA = itemA.specs?.[field.id], sB = itemB.specs?.[field.id];
+    if (!hv(sA) || !hv(sB)) return null;
+    const aS = !!itemA.isSupply, bS = !!itemB.isSupply;
+    if (aS && !bS) return { field, status: checkSupplyCompat(sA, sB, field), dir: 'a→b' };
+    if (!aS && bS) return { field, status: checkSupplyCompat(sB, sA, field), dir: 'b→a' };
+    return { field, status: checkSpecCompat(sA, sB, field), dir: 'sym' };
+  }).filter(Boolean);
 }
 
 function overallStatus(results) {
@@ -343,7 +362,7 @@ function itemMatchesFilter(item) {
   if (!fieldId || value === '') return true;
   const field = data.specFields.find(f => f.id === fieldId);
   if (!field) return true;
-  const spec = item.specs?.[fieldId];
+  const spec = item.inputSpecs?.[fieldId] || item.outputSpecs?.[fieldId] || item.specs?.[fieldId];
   if (!hasSpecValue(spec, field)) return false;
 
   if (field.type === 'text') {
@@ -731,10 +750,11 @@ function renderItemCard(item, bom) {
     return `<a class="platform-btn ${p}${isCheap}" href="${esc(d.url)}" target="_blank" rel="noopener">${label}${priceStr}${noteStr}</a>`;
   }).join('');
 
-  const specChips = data.specFields
-    .filter(f => hasSpecValue(item.specs?.[f.id], f))
-    .map(f => `<span class="spec-chip">${esc(f.name)}: <strong>${esc(formatSpec(item.specs[f.id], f))}</strong></span>`)
+  const makeChips = (specs, dir) => data.specFields
+    .filter(f => hasSpecValue(specs?.[f.id], f))
+    .map(f => `<span class="spec-chip spec-chip-${dir||'legacy'}"><span class="spec-dir-label">${dir ? dir+' ' : ''}</span>${esc(f.name)}: <strong>${esc(formatSpec(specs[f.id], f))}</strong></span>`)
     .join('');
+  const specChips = makeChips(item.inputSpecs, 'in') + makeChips(item.outputSpecs, 'out') + makeChips(item.specs, '');
 
   const linkedHtml = (item.linkedParts || []).map(linkedId => {
     const linkedItem = bom.items.find(i => i.id === linkedId);
@@ -742,9 +762,9 @@ function renderItemCard(item, bom) {
     const results = checkItemCompat(item, linkedItem);
     const cs = overallStatus(results);
     const details = results.map(r => `${r.field.name}: ${COMPAT_ICON[r.status]}`).join(' · ') || 'No shared specs';
-    const isSupplyLink = !!item.isSupply !== !!linkedItem.isSupply;
+    const hasDirectional = results.some(r => r.dir === 'a→b' || r.dir === 'b→a');
     const supplyVerb = { ok: 'Powers', warn: 'Marginal power', mismatch: 'Cannot power', unknown: 'Linked' };
-    const chipLabel = isSupplyLink ? `⚡ ${supplyVerb[cs]}` : COMPAT_LABEL[cs];
+    const chipLabel = hasDirectional ? `⚡ ${supplyVerb[cs]}` : COMPAT_LABEL[cs];
     return `<div class="compat-chip" style="border-color:${COMPAT_COLOR[cs]}22;color:${COMPAT_COLOR[cs]}" title="${esc(details)}">
       ${COMPAT_ICON[cs]} ${esc(linkedItem.name)} <span style="font-size:0.65rem;opacity:0.7">${chipLabel}${details !== 'No shared specs' ? ' · ' + esc(details) : ''}</span>
     </div>`;
@@ -963,33 +983,26 @@ function openItemModal(existing = null) {
   const bom = getActiveBom();
   const otherItems = bom.items.filter(i => i.id !== existing?.id);
 
-  const specInputs = data.specFields.map(f => {
-    const s = existing?.specs?.[f.id] || {};
-    if (f.type === 'range') {
-      return `
-        <div class="spec-field-row">
-          <span class="spec-field-label">${esc(f.name)} <span class="spec-unit">${esc(f.unit)}</span></span>
-          <div class="spec-range-inputs">
-            <input type="number" class="spec-input" data-field="${f.id}" data-key="min" placeholder="min" value="${s.min ?? ''}">
-            <span class="range-dash">–</span>
-            <input type="number" class="spec-input" data-field="${f.id}" data-key="max" placeholder="max" value="${s.max ?? ''}">
-            <span style="font-size:0.7rem;color:var(--text-muted);white-space:nowrap">or exact:</span>
-            <input type="number" class="spec-input" data-field="${f.id}" data-key="value" placeholder="exact" value="${s.value ?? ''}" style="width:70px">
-          </div>
-        </div>`;
-    }
-    if (f.type === 'value') {
-      return `
-        <div class="spec-field-row">
-          <span class="spec-field-label">${esc(f.name)} <span class="spec-unit">${esc(f.unit)}</span></span>
-          <input type="number" class="spec-input" data-field="${f.id}" data-key="value" placeholder="value" value="${s.value ?? ''}">
-        </div>`;
-    }
+  const makeSpecInputs = (section, existingSpecs) => data.specFields.map(f => {
+    const s = existingSpecs?.[f.id] || {};
+    const si = (key, extra = '') =>
+      `<input type="number" class="spec-input" data-section="${section}" data-field="${f.id}" data-key="${key}" ${extra}>`;
+    const st = () =>
+      `<input type="text" class="spec-input" data-section="${section}" data-field="${f.id}" data-key="text" placeholder="e.g. JST-XH" value="${esc(s.text || '')}">`;
+    if (f.type === 'range') return `
+      <div class="spec-field-row">
+        <span class="spec-field-label">${esc(f.name)} <span class="spec-unit">${esc(f.unit)}</span></span>
+        <div class="spec-range-inputs">
+          ${si('min', `placeholder="min" value="${s.min ?? ''}"`)}<span class="range-dash">–</span>${si('max', `placeholder="max" value="${s.max ?? ''}"`)}<span style="font-size:0.7rem;color:var(--text-muted);white-space:nowrap">or:</span>${si('value', `placeholder="exact" value="${s.value ?? ''}" style="width:70px"`)}
+        </div>
+      </div>`;
+    if (f.type === 'value') return `
+      <div class="spec-field-row">
+        <span class="spec-field-label">${esc(f.name)} <span class="spec-unit">${esc(f.unit)}</span></span>
+        ${si('value', `placeholder="value" value="${s.value ?? ''}"`)}</div>`;
     return `
       <div class="spec-field-row">
-        <span class="spec-field-label">${esc(f.name)}</span>
-        <input type="text" class="spec-input" data-field="${f.id}" data-key="text" placeholder="e.g. JST-XH" value="${esc(s.text || '')}">
-      </div>`;
+        <span class="spec-field-label">${esc(f.name)}</span>${st()}</div>`;
   }).join('');
 
   const linkedIds = new Set(existing?.linkedParts || []);
@@ -1055,8 +1068,16 @@ function openItemModal(existing = null) {
             <img id="img-preview" class="img-preview" src="${esc(existing?.imageUrl || '')}" alt="" style="${existing?.imageUrl ? 'display:block' : 'display:none'}">
           </div>
 
-          <div class="modal-section-title">Specifications</div>
-          <div id="spec-fields-list">${specInputs}</div>
+          <div class="spec-io-grid">
+            <div class="spec-io-col">
+              <div class="modal-section-title spec-in-title">📥 Input <span class="spec-io-hint">what it needs</span></div>
+              <div id="spec-fields-in">${makeSpecInputs('in', existing?.inputSpecs)}</div>
+            </div>
+            <div class="spec-io-col">
+              <div class="modal-section-title spec-out-title">📤 Output <span class="spec-io-hint">what it provides</span></div>
+              <div id="spec-fields-out">${makeSpecInputs('out', existing?.outputSpecs)}</div>
+            </div>
+          </div>
           <button class="header-btn" id="add-spec-field-btn" style="margin-top:8px;font-size:0.75rem">+ Define new spec field</button>
 
           <div class="form-group" style="margin-top:14px">
@@ -1188,10 +1209,9 @@ function openItemModal(existing = null) {
     preview.src = url; preview.style.display = url ? 'block' : 'none';
   });
 
-  // Add spec field inline
+  // Add spec field inline — capture current form state, re-open with new field visible
   document.getElementById('add-spec-field-btn').addEventListener('click', () => {
     openDefineSpecFieldModal(() => {
-      // Re-open item modal with existing data to show new field
       const tempItem = buildItemFromModal(existing);
       close();
       openItemModal(isEdit ? Object.assign(existing, tempItem) : tempItem);
@@ -1224,13 +1244,14 @@ function openItemModal(existing = null) {
 }
 
 function buildItemFromModal(existing) {
-  const specs = {};
+  const inputSpecs = {}, outputSpecs = {};
   document.querySelectorAll('.spec-input').forEach(input => {
-    const fid = input.dataset.field, key = input.dataset.key;
+    const section = input.dataset.section, fid = input.dataset.field, key = input.dataset.key;
     const val = input.value.trim();
     if (!val) return;
-    if (!specs[fid]) specs[fid] = {};
-    specs[fid][key] = key === 'text' ? val : parseFloat(val);
+    const target = section === 'out' ? outputSpecs : inputSpecs;
+    if (!target[fid]) target[fid] = {};
+    target[fid][key] = key === 'text' ? val : parseFloat(val);
   });
 
   const linkedParts = [...document.querySelectorAll('input[name="linked"]:checked')].map(el => el.value);
@@ -1243,7 +1264,8 @@ function buildItemFromModal(existing) {
     status: document.getElementById('item-status')?.value || 'needed',
     isSupply: !!(document.getElementById('item-is-supply')?.checked),
     imageUrl: pf('item-img'),
-    specs,
+    inputSpecs, outputSpecs,
+    specs: existing?.specs || {}, // preserve legacy field for backward compat
     specsNotes: document.getElementById('item-notes')?.value.trim() || '',
     linkedParts,
     platforms: {
@@ -1876,6 +1898,7 @@ function importFromCSV(rows) {
   const iName    = ci('name');
   const iQty     = ci('qty');
   const iStock   = ci('stock');
+  const iIsSupply = ci('is supply');
   const iStatus  = ci('status');
   const iType    = ci('component type') >= 0 ? ci('component type') : ci('componenttype');
   const iNotes   = ci('notes');
@@ -1888,11 +1911,15 @@ function importFromCSV(rows) {
   const iUpdatedAt = ci('updated at');
   if (iName < 0) return null;
 
-  // Detect spec field columns
+  // Detect spec field columns — new format has "Name in (unit)" / "Name out (unit)", legacy has "Name (unit)"
   const specColMap = [];
   data.specFields.forEach(f => {
-    const idx = header.findIndex(h => h.toLowerCase().startsWith(f.name.toLowerCase()));
-    if (idx >= 0) specColMap.push({ field: f, colIdx: idx });
+    const nameLo = f.name.toLowerCase();
+    const inIdx  = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' in'));
+    const outIdx = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' out'));
+    const legIdx = (inIdx < 0 && outIdx < 0)
+      ? header.findIndex(h => h.toLowerCase().startsWith(nameLo)) : -1;
+    specColMap.push({ field: f, inIdx, outIdx, legIdx });
   });
 
   // Find end of items section
@@ -1909,21 +1936,29 @@ function importFromCSV(rows) {
     const name = r[iName]?.trim();
     if (!name) continue;
 
-    const specs = {};
-    specColMap.forEach(({ field, colIdx }) => {
-      const raw = r[colIdx]?.trim();
-      if (!raw || raw === '—') return;
-      if (field.type === 'text') {
-        specs[field.id] = { text: raw };
-      } else if (field.type === 'value') {
-        const v = parseFloat(raw);
-        if (!isNaN(v)) specs[field.id] = { value: v };
-      } else if (field.type === 'range') {
-        const rangeMatch = raw.replace(/[^\d.\-–]/g, '').match(/^([\d.]+)[–-]([\d.]+)$/);
-        if (rangeMatch) specs[field.id] = { min: parseFloat(rangeMatch[1]), max: parseFloat(rangeMatch[2]) };
-        else { const v = parseFloat(raw); if (!isNaN(v)) specs[field.id] = { value: v }; }
+    const parseSpecVal = (raw, field) => {
+      if (!raw || raw === '—') return null;
+      if (field.type === 'text') return { text: raw };
+      if (field.type === 'value') { const v = parseFloat(raw); return isNaN(v) ? null : { value: v }; }
+      if (field.type === 'range') {
+        const m = raw.replace(/[^\d.\-–]/g, '').match(/^([\d.]+)[–-]([\d.]+)$/);
+        if (m) return { min: parseFloat(m[1]), max: parseFloat(m[2]) };
+        const v = parseFloat(raw); return isNaN(v) ? null : { value: v };
       }
+      return null;
+    };
+    const inputSpecs = {}, outputSpecs = {}, legacySpecs = {};
+    specColMap.forEach(({ field, inIdx, outIdx, legIdx }) => {
+      if (inIdx  >= 0) { const v = parseSpecVal(r[inIdx]?.trim(),  field); if (v) inputSpecs[field.id]  = v; }
+      if (outIdx >= 0) { const v = parseSpecVal(r[outIdx]?.trim(), field); if (v) outputSpecs[field.id] = v; }
+      if (legIdx >= 0) { const v = parseSpecVal(r[legIdx]?.trim(), field); if (v) legacySpecs[field.id] = v; }
     });
+    // If only legacy columns exist, distribute by isSupply flag (detected from csv)
+    const isSupplyCsv = iIsSupply >= 0 ? /^yes$/i.test(r[iIsSupply]?.trim()) : false;
+    if (Object.keys(legacySpecs).length) {
+      if (isSupplyCsv) Object.assign(outputSpecs, legacySpecs);
+      else             Object.assign(inputSpecs, legacySpecs);
+    }
 
     const statusRaw = (r[iStatus] || '').toLowerCase();
     const status = statusRaw.includes('order') && !statusRaw.includes('need') ? 'ordered'
@@ -1937,10 +1972,11 @@ function importFromCSV(rows) {
       componentType: iType >= 0 ? r[iType]?.trim() || '' : '',
       quantity: parseInt(r[iQty]) || 1,
       stock: iStock >= 0 ? parseInt(r[iStock]) || 0 : 0,
+      isSupply: isSupplyCsv,
       status,
       specsNotes: iNotes >= 0 ? r[iNotes]?.trim() || '' : '',
       imageUrl:   iImg   >= 0 ? r[iImg]?.trim()   || '' : '',
-      specs,
+      specs: {}, inputSpecs, outputSpecs,
       linkedParts: [],
       updatedAt: iUpdatedAt >= 0 && r[iUpdatedAt] ? (new Date(r[iUpdatedAt]).getTime() || null) : null,
       platforms: {
@@ -2133,10 +2169,11 @@ function exportCSV() {
   const sections = [];
 
   // ── Items ──
-  const specHeaders = data.specFields.map(f => `${f.name} (${f.unit || f.type})`);
+  const specInHeaders  = data.specFields.map(f => `${f.name} in (${f.unit || f.type})`);
+  const specOutHeaders = data.specFields.map(f => `${f.name} out (${f.unit || f.type})`);
   sections.push(row(['ITEMS']));
-  sections.push(row(['Name', 'Component Type', 'Qty', 'Stock', 'Status', 'Notes', 'Image URL',
-    ...specHeaders,
+  sections.push(row(['Name', 'Component Type', 'Qty', 'Stock', 'Is Supply', 'Status', 'Notes', 'Image URL',
+    ...specInHeaders, ...specOutHeaders,
     'Amazon URL', 'Amazon Price', 'Amazon Currency',
     'Lazada URL', 'Lazada Price', 'Lazada Currency',
     'AliExpress URL', 'AliExpress Price', 'AliExpress Currency',
@@ -2148,13 +2185,15 @@ function exportCSV() {
     const prices = getPrices(item);
     const cheapest = prices.length ? prices.reduce((a, b) => a.price < b.price ? a : b) : null;
     const p = item.platforms || {};
-    const specValues = data.specFields.map(f => formatSpec(item.specs?.[f.id], f));
+    const specInValues  = data.specFields.map(f => formatSpec((item.inputSpecs || item.specs)?.[f.id], f));
+    const specOutValues = data.specFields.map(f => formatSpec(item.outputSpecs?.[f.id], f));
     const linkedNames = (item.linkedParts || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
     sections.push(row([
       item.name, item.componentType || '', item.quantity || 1, item.stock || 0,
+      item.isSupply ? 'yes' : '',
       STATUS_LABEL[item.status || 'needed'] || item.status || '',
       item.specsNotes || '', item.imageUrl || '',
-      ...specValues,
+      ...specInValues, ...specOutValues,
       p.amazon?.url || '', p.amazon?.price || '', p.amazon?.currency || '',
       p.lazada?.url || '', p.lazada?.price || '', p.lazada?.currency || '',
       p.aliexpress?.url || '', p.aliexpress?.price || '', p.aliexpress?.currency || '',

@@ -1205,6 +1205,43 @@ textarea { resize: vertical; min-height: 70px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
 
+/* ── Input / Output spec columns in item modal ── */
+.spec-io-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 560px) {
+  .spec-io-grid { grid-template-columns: 1fr; }
+}
+
+.spec-io-col { min-width: 0; }
+
+.spec-in-title  { color: #60a5fa; }
+.spec-out-title { color: var(--green); }
+
+.spec-io-hint {
+  font-size: 0.6rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 4px;
+}
+
+/* ── Spec direction labels on chips ── */
+.spec-dir-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+.spec-chip-in  .spec-dir-label { color: #60a5fa; }
+.spec-chip-out .spec-dir-label { color: var(--green); }
+
 /* ── Supply badge ── */
 .supply-badge {
   display: inline-flex; align-items: center; gap: 3px;
