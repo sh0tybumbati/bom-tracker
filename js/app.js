@@ -356,7 +356,20 @@ function renderBomHeader() {
   const bom = getActiveBom();
   const main = document.getElementById('main');
   if (!bom) {
-    main.innerHTML = `<div id="no-bom"><div class="icon">📋</div><h2>No BOM selected</h2><p>Tap the BOM picker above to get started</p></div>`;
+    main.innerHTML = `
+      <div id="no-bom">
+        <div class="no-bom-icon">📋</div>
+        <h2>${data.boms.length ? 'Select a BOM' : 'Welcome to BOM Tracker'}</h2>
+        <p>${data.boms.length
+          ? 'Tap the BOM picker at the top to switch between your bills of materials.'
+          : 'Track components, compare prices across suppliers, and manage procurement for your projects.'}</p>
+        <button class="header-btn primary" id="no-bom-create-btn">
+          ${data.boms.length ? '📋 Open BOM picker' : '+ Create your first BOM'}
+        </button>
+      </div>`;
+    document.getElementById('no-bom-create-btn').addEventListener('click',
+      () => data.boms.length ? openBomPickerModal() : openBomModal(null)
+    );
     return;
   }
 
@@ -376,13 +389,13 @@ function renderBomHeader() {
         <div class="stat-chip">Qty <span>${itemCount}</span></div>
         <div class="stat-chip">Total <span>${total}</span></div>
       </div>
-      <button class="header-btn" id="edit-bom-btn">Edit</button>
-      <button class="header-btn primary" id="add-item-btn">+ Add Item</button>
-      <button class="header-btn" id="manage-bundles-btn">📦 Bundles</button>
-      <button class="header-btn" id="compare-btn">⚖ Compare</button>
-      <button class="header-btn" id="manage-specs-btn">⚙ Specs</button>
-      <button class="header-btn" id="share-bom-btn">🔗 Share</button>
-      <button class="header-btn danger" id="delete-bom-btn">Delete</button>
+      <button class="header-btn" id="edit-bom-btn" title="Edit BOM">✏ <span class="btn-text">Edit</span></button>
+      <button class="header-btn primary" id="add-item-btn" title="Add Item">+ <span class="btn-text">Add Item</span></button>
+      <button class="header-btn" id="manage-bundles-btn" title="Manage Bundles">📦 <span class="btn-text">Bundles</span></button>
+      <button class="header-btn" id="compare-btn" title="Compare Proposals">⚖ <span class="btn-text">Compare</span></button>
+      <button class="header-btn" id="manage-specs-btn" title="Manage Spec Fields">⚙ <span class="btn-text">Specs</span></button>
+      <button class="header-btn" id="share-bom-btn" title="Share BOM">🔗 <span class="btn-text">Share</span></button>
+      <button class="header-btn danger" id="delete-bom-btn" title="Delete BOM">🗑 <span class="btn-text">Delete</span></button>
     </div>
     <div id="filter-bar">
       <select id="filter-field">
@@ -530,6 +543,47 @@ function renderItems() {
   area.querySelectorAll('.item-del-btn').forEach(btn =>
     btn.addEventListener('click', () => deleteItem(btn.dataset.id))
   );
+
+  // Swipe-to-delete on list cards
+  if (viewMode === 'list') {
+    area.querySelectorAll('.item-card').forEach(card => {
+      let startX = 0, startY = 0, curDx = 0, tracking = false;
+      const itemId = card.querySelector('[data-id]')?.dataset.id;
+
+      card.addEventListener('touchstart', e => {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        curDx = 0; tracking = true;
+        card.classList.add('swiping');
+      }, { passive: true });
+
+      card.addEventListener('touchmove', e => {
+        if (!tracking) return;
+        const dx = e.touches[0].clientX - startX;
+        const dy = Math.abs(e.touches[0].clientY - startY);
+        if (dy > Math.abs(dx)) { tracking = false; card.style.transform = ''; return; }
+        curDx = Math.min(0, dx); // only left swipe
+        const clamped = Math.max(curDx, -120);
+        card.style.transform = `translateX(${clamped}px)`;
+        card.classList.toggle('swipe-delete', curDx < -80);
+      }, { passive: true });
+
+      card.addEventListener('touchend', () => {
+        tracking = false;
+        card.classList.remove('swiping');
+        if (curDx < -80 && itemId) {
+          card.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
+          card.style.transform = 'translateX(-110%)';
+          card.style.opacity = '0';
+          setTimeout(() => deleteItem(itemId), 210);
+        } else {
+          card.style.transition = 'transform 0.25s ease';
+          card.style.transform = '';
+          card.classList.remove('swipe-delete');
+        }
+      });
+    });
+  }
 }
 
 function renderItemCard(item, bom) {
