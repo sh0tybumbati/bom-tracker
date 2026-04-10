@@ -263,6 +263,15 @@ body {
   flex-wrap: wrap;
 }
 
+#toolbar-total {
+  margin-left: auto;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--green);
+  white-space: nowrap;
+  padding: 4px 0;
+}
+
 #item-search {
   flex: 1;
   min-width: 160px;

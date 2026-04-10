@@ -425,6 +425,7 @@ function renderBomHeader() {
         <option value="status" ${filterState.sort==='status'?'selected':''}>Status</option>
       </select>
       <button id="view-toggle-btn" class="${viewMode === 'tile' ? 'active' : ''}" title="${viewMode === 'tile' ? 'List view' : 'Tile view'}">${viewMode === 'tile' ? '≡ List' : '⊞ Tiles'}</button>
+      <span id="toolbar-total">${total}</span>
     </div>
     <div id="items-area"></div>`;
 
@@ -632,7 +633,11 @@ function renderItemCard(item, bom) {
   }).join('');
 
   let bestPriceHtml;
-  if (cheapest) {
+  if (bundle && bundle.price) {
+    const coversN = (bundle.coversItemIds || []).length;
+    const pHtml = formatBundlePrice(bundle, bom);
+    bestPriceHtml = `<div class="item-best-price" style="color:var(--amber)">${pHtml}</div><div class="item-best-price-label">bundle${coversN > 1 ? ` · ${coversN} items` : ''}</div>`;
+  } else if (cheapest) {
     const sym = cheapest.currency;
     const fromCode = codeOfSym(sym);
     const conv = fromCode ? toDisplay(cheapest.price, fromCode) : null;
@@ -648,7 +653,10 @@ function renderItemCard(item, bom) {
   const status = item.status || 'needed';
   const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
   const bundle = coveredByBundle(item.id, bom);
-  const bundleBadge = bundle ? `<span class="bundle-badge" title="Price covered by bundle">📦 ${esc(bundle.name)}</span>` : '';
+  const bundlePriceHtml = bundle ? formatBundlePrice(bundle, bom) : '';
+  const bundleBadge = bundle
+    ? `<span class="bundle-badge">📦 ${esc(bundle.name)}${bundlePriceHtml ? ` · ${bundlePriceHtml}` : ''}</span>`
+    : '';
   const typeBadge = item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '';
 
   return `
@@ -696,7 +704,8 @@ function renderItemTile(item, bom) {
 
   let priceHtml = '';
   if (bundle) {
-    priceHtml = `<span class="item-tile-price" title="Covered by bundle">📦</span>`;
+    const pHtml = formatBundlePrice(bundle, bom);
+    priceHtml = `<span class="item-tile-price" style="color:var(--amber)">📦 ${pHtml}</span>`;
   } else if (cheapest) {
     const sym = cheapest.currency;
     const fromCode = codeOfSym(sym);
@@ -2207,6 +2216,17 @@ function getPrices(item) {
 
 function coveredByBundle(itemId, bom) {
   return (bom.bundles || []).find(b => b.coversItemIds?.includes(itemId)) || null;
+}
+
+function formatBundlePrice(bundle, bom) {
+  if (!bundle?.price) return '';
+  const sym = bundle.currency || '$';
+  const fromCode = codeOfSym(sym);
+  const conv = fromCode ? toDisplay(parseFloat(bundle.price), fromCode) : null;
+  if (conv && conv.converted) {
+    return `${conv.symbol}${conv.amount.toFixed(2)}<small style="opacity:.55"> (${sym}${bundle.price})</small>`;
+  }
+  return `${sym}${bundle.price}`;
 }
 
 function calcBomTotal(bom) {
