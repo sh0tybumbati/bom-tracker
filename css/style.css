@@ -1204,3 +1204,86 @@ textarea { resize: vertical; min-height: 70px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
+
+/* ── Status group headers ── */
+.status-group-header {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-muted);
+  padding: 12px 0 4px; display: flex; align-items: center; gap: 8px;
+}
+.status-group-header::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.status-group-header.group-received { color: var(--green); }
+.status-group-header.group-ordered  { color: var(--amber); }
+
+/* ── Unpriced badge ── */
+.unpriced-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 0.6rem; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+  background: #f59e0b1a; border: 1px solid #f59e0b44; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+/* ── Stock badge ── */
+.stock-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 0.6rem; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+  background: #22c55e1a; border: 1px solid #22c55e44; color: var(--green);
+}
+
+/* ── Price spread warning ── */
+.price-spread-warn { font-size: 0.62rem; color: var(--amber); font-weight: 600; }
+
+/* ── Drag handle / reorder ── */
+.drag-handle {
+  cursor: grab; color: var(--border-hi); font-size: 0.9rem; padding: 0 2px;
+  user-select: none; align-self: stretch; display: flex; align-items: center;
+}
+.drag-handle:active { cursor: grabbing; }
+.item-card.dragging { opacity: 0.45; }
+.item-card.drag-over { border-color: var(--accent); box-shadow: var(--card-glow); }
+
+/* ── Duplicate button ── */
+.item-dup-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); padding: 4px 8px; cursor: pointer;
+  font-size: 0.72rem; transition: all 0.15s; font-family: inherit; width: 100%;
+}
+.item-dup-btn:hover { border-color: var(--green); color: var(--green); }
+
+/* ── eBay / Shopee platform colours ── */
+.platform-btn.ebay   { background: #0064d218; color: #4da6ff; border: 1px solid #0064d233; }
+.platform-btn.shopee { background: #ee450018; color: #ff8c42; border: 1px solid #ee450033; }
+.dot-ebay   { background: #4da6ff; }
+.dot-shopee { background: #ff8c42; }
+
+/* ── Undo toast ── */
+.toast.toast-undo { pointer-events: all; }
+.toast-undo-btn {
+  margin-left: 12px; padding: 2px 10px; background: var(--accent);
+  border: none; border-radius: 10px; color: #fff; font-size: 0.78rem;
+  font-weight: 700; cursor: pointer; font-family: inherit;
+}
+
+/* ── QR modal ── */
+.qr-modal-img {
+  display: block; margin: 12px auto; border-radius: 8px;
+  border: 6px solid #fff; image-rendering: pixelated;
+}
+
+/* ── Print styles ── */
+@media print {
+  #topbar, #bom-header, #filter-bar, #items-toolbar,
+  .item-actions, .item-tile-actions, .item-tile-qty-strip,
+  .toast, .modal-overlay { display: none !important; }
+  body { padding-top: 0 !important; background: #fff; color: #000; }
+  .item-card {
+    border: 1px solid #ccc !important; break-inside: avoid;
+    margin-bottom: 8px; box-shadow: none !important;
+    background: #fff !important; color: #000 !important;
+  }
+  .item-name, .item-body { color: #000 !important; }
+  .platform-btn { border: 1px solid #ccc !important; color: #333 !important; background: #f5f5f5 !important; }
+  .spec-chip { border: 1px solid #ccc !important; background: #f5f5f5 !important; color: #333 !important; }
+  .status-badge { border: 1px solid #999 !important; color: #333 !important; background: #eee !important; }
+  #items-area { display: block !important; }
+}

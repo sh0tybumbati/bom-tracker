@@ -156,6 +156,11 @@ function loadData() {
         if (typeof item.specs === 'string') { item.specsNotes = item.specs; item.specs = {}; }
         if (!item.specs) item.specs = {};
         if (!item.linkedParts) item.linkedParts = [];
+        if (item.stock === undefined) item.stock = 0;
+        if (!item.platforms) item.platforms = {};
+        ['amazon','lazada','aliexpress','ebay','shopee'].forEach(p => {
+          if (!item.platforms[p]) item.platforms[p] = {};
+        });
       });
     });
     return d;
@@ -410,6 +415,7 @@ function renderBomHeader() {
       <button class="header-btn" id="compare-btn" title="Compare Proposals">⚖ <span class="btn-text">Compare</span></button>
       <button class="header-btn" id="manage-specs-btn" title="Manage Spec Fields">⚙ <span class="btn-text">Specs</span></button>
       <button class="header-btn" id="share-bom-btn" title="Share BOM">🔗 <span class="btn-text">Share</span></button>
+      <button class="header-btn" id="print-bom-btn" title="Print BOM">🖨 <span class="btn-text">Print</span></button>
       <button class="header-btn danger" id="delete-bom-btn" title="Delete BOM">🗑 <span class="btn-text">Delete</span></button>
     </div>
     <div id="filter-bar">
@@ -450,6 +456,7 @@ function renderBomHeader() {
   document.getElementById('compare-btn').addEventListener('click', openCompareBomModal);
   document.getElementById('manage-specs-btn').addEventListener('click', openSpecFieldsModal);
   document.getElementById('share-bom-btn').addEventListener('click', shareBom);
+  document.getElementById('print-bom-btn').addEventListener('click', () => window.print());
   document.getElementById('delete-bom-btn').addEventListener('click', deleteBom);
 
   document.getElementById('item-search').addEventListener('input', e => {
@@ -520,9 +527,20 @@ function renderItems() {
   }
 
   area.classList.toggle('tile-view', viewMode === 'tile');
-  area.innerHTML = viewMode === 'tile'
-    ? filtered.map(item => renderItemTile(item, bom)).join('')
-    : filtered.map(item => renderItemCard(item, bom)).join('');
+
+  if (sort === 'status' && viewMode === 'list') {
+    const groupOrder = ['received', 'ordered', 'needed'];
+    const groupLabels = { received: 'In Stock', ordered: 'Ordered', needed: 'Need to Order' };
+    area.innerHTML = groupOrder.map(s => {
+      const gi = filtered.filter(i => (i.status || 'needed') === s);
+      if (!gi.length) return '';
+      return `<div class="status-group-header group-${s}">${groupLabels[s]} (${gi.length})</div>` + gi.map(item => renderItemCard(item, bom)).join('');
+    }).join('');
+  } else {
+    area.innerHTML = viewMode === 'tile'
+      ? filtered.map(item => renderItemTile(item, bom)).join('')
+      : filtered.map(item => renderItemCard(item, bom)).join('');
+  }
 
   area.querySelectorAll('.qty-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -556,9 +574,47 @@ function renderItems() {
     })
   );
 
+  area.querySelectorAll('.item-dup-btn').forEach(btn =>
+    btn.addEventListener('click', () => duplicateItem(btn.dataset.id))
+  );
+
   area.querySelectorAll('.item-del-btn').forEach(btn =>
     btn.addEventListener('click', () => deleteItem(btn.dataset.id))
   );
+
+  // Drag-to-reorder (list view)
+  if (viewMode === 'list') {
+    let dragSrcId = null;
+    area.querySelectorAll('.item-card').forEach(card => {
+      card.setAttribute('draggable', 'true');
+      card.addEventListener('dragstart', e => {
+        dragSrcId = card.dataset.itemId;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+        area.querySelectorAll('.item-card').forEach(c => c.classList.remove('drag-over'));
+      });
+      card.addEventListener('dragover', e => {
+        e.preventDefault();
+        if (card.dataset.itemId !== dragSrcId) card.classList.add('drag-over');
+      });
+      card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+      card.addEventListener('drop', e => {
+        e.preventDefault();
+        card.classList.remove('drag-over');
+        const tgtId = card.dataset.itemId;
+        if (!dragSrcId || dragSrcId === tgtId) return;
+        const srcIdx = bom.items.findIndex(i => i.id === dragSrcId);
+        const tgtIdx = bom.items.findIndex(i => i.id === tgtId);
+        if (srcIdx < 0 || tgtIdx < 0) return;
+        const [moved] = bom.items.splice(srcIdx, 1);
+        bom.items.splice(tgtIdx, 0, moved);
+        saveData(data); renderItems();
+      });
+    });
+  }
 
   // Swipe-to-delete on list cards
   if (viewMode === 'list') {
@@ -605,35 +661,44 @@ function renderItems() {
 function renderItemCard(item, bom) {
   const prices = getPrices(item);
   const cheapest = prices.length ? prices.reduce((a, b) => a.price < b.price ? a : b) : null;
+  const status = item.status || 'needed';
+  const bundle = coveredByBundle(item.id, bom);
+
+  // Price spread warning (>50% spread in display currency)
+  let priceWarnHtml = '';
+  if (prices.length >= 2) {
+    const vals = prices.map(p => { const c = codeOfSym(p.currency); const cv = c ? toDisplay(p.price, c) : null; return cv ? cv.amount : p.price; });
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    if (lo > 0 && (hi - lo) / lo > 0.5) priceWarnHtml = `<span class="price-spread-warn" title="Prices vary by over 50%">⚠ price spread</span>`;
+  }
 
   const imgHtml = item.imageUrl
     ? `<div class="item-img"><img src="${esc(item.imageUrl)}" alt="" onerror="this.parentElement.innerHTML='📦'"></div>`
     : `<div class="item-img">📦</div>`;
 
-  const platformBtns = ['amazon', 'lazada', 'aliexpress'].map(p => {
+  const platformBtns = ['amazon', 'lazada', 'aliexpress', 'ebay', 'shopee'].map(p => {
     const d = item.platforms?.[p];
     if (!d?.url) return '';
     const isCheap = cheapest?.platform === p ? ' cheapest' : '';
-    const label = { amazon: '🟠 Amazon', lazada: '🔵 Lazada', aliexpress: '🔴 AliExpress' }[p];
+    const label = { amazon: '🟠 Amazon', lazada: '🔵 Lazada', aliexpress: '🔴 AliExpress', ebay: '🔷 eBay', shopee: '🟧 Shopee' }[p];
     const priceStr = d.price ? ` · ${priceInDisplay(d.price, d.currency || '$')}` : '';
-    return `<a class="platform-btn ${p}${isCheap}" href="${esc(d.url)}" target="_blank" rel="noopener">${label}${priceStr}</a>`;
+    const noteStr = d.notes ? ` <small style="opacity:.5">${esc(d.notes)}</small>` : '';
+    return `<a class="platform-btn ${p}${isCheap}" href="${esc(d.url)}" target="_blank" rel="noopener">${label}${priceStr}${noteStr}</a>`;
   }).join('');
 
-  // Spec chips
   const specChips = data.specFields
     .filter(f => hasSpecValue(item.specs?.[f.id], f))
     .map(f => `<span class="spec-chip">${esc(f.name)}: <strong>${esc(formatSpec(item.specs[f.id], f))}</strong></span>`)
     .join('');
 
-  // Linked parts + compat
   const linkedHtml = (item.linkedParts || []).map(linkedId => {
     const linkedItem = bom.items.find(i => i.id === linkedId);
     if (!linkedItem) return '';
     const results = checkItemCompat(item, linkedItem);
-    const status = overallStatus(results);
+    const cs = overallStatus(results);
     const details = results.map(r => `${r.field.name}: ${COMPAT_ICON[r.status]}`).join(' · ') || 'No shared specs';
-    return `<div class="compat-chip" style="border-color:${COMPAT_COLOR[status]}22;color:${COMPAT_COLOR[status]}" title="${esc(details)}">
-      ${COMPAT_ICON[status]} ${esc(linkedItem.name)} <span style="font-size:0.65rem;opacity:0.7">${esc(details)}</span>
+    return `<div class="compat-chip" style="border-color:${COMPAT_COLOR[cs]}22;color:${COMPAT_COLOR[cs]}" title="${esc(details)}">
+      ${COMPAT_ICON[cs]} ${esc(linkedItem.name)} <span style="font-size:0.65rem;opacity:0.7">${esc(details)}</span>
     </div>`;
   }).join('');
 
@@ -647,17 +712,17 @@ function renderItemCard(item, bom) {
     bestPriceHtml = `<div class="item-best-price" style="color:var(--text-muted)">—</div>`;
   }
 
-  const status = item.status || 'needed';
   const statusBadge = `<span class="status-badge status-${status}">${STATUS_LABEL[status]}</span>`;
-  const bundle = coveredByBundle(item.id, bom);
   const bundlePriceHtml = bundle ? formatBundlePrice(bundle) : '';
-  const bundleBadge = bundle
-    ? `<span class="bundle-badge">📦 ${esc(bundle.name)}${bundlePriceHtml ? ` · ${bundlePriceHtml}` : ''}</span>`
-    : '';
+  const bundleBadge = bundle ? `<span class="bundle-badge">📦 ${esc(bundle.name)}${bundlePriceHtml ? ` · ${bundlePriceHtml}` : ''}</span>` : '';
   const typeBadge = item.componentType ? `<span class="type-badge">${esc(item.componentType)}</span>` : '';
+  const unpricedBadge = !prices.length && !bundle ? `<span class="unpriced-badge">⚠ no price</span>` : '';
+  const stockBadge = item.stock > 0 ? `<span class="stock-badge">Stock: ${item.stock}</span>` : '';
+  const extraBadges = [unpricedBadge, stockBadge, priceWarnHtml].filter(Boolean).join('');
+  const updatedHtml = item.updatedAt ? `<div style="font-size:0.6rem;color:var(--text-muted);margin-top:4px">Updated ${formatRelTime(item.updatedAt)}</div>` : '';
 
   return `
-    <div class="item-card status-${status}">
+    <div class="item-card status-${status}" data-item-id="${item.id}">
       ${imgHtml}
       <div class="item-body">
         <div class="item-top">
@@ -670,10 +735,12 @@ function renderItemCard(item, bom) {
             <div class="item-qty">×${item.quantity || 1}</div>
           </div>
         </div>
+        ${extraBadges ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">${extraBadges}</div>` : ''}
         ${specChips ? `<div class="spec-chips">${specChips}</div>` : ''}
         ${item.specsNotes ? `<div class="item-specs">${esc(item.specsNotes)}</div>` : ''}
         ${bundleBadge ? `<div style="margin-bottom:6px">${bundleBadge}</div>` : `<div class="item-links">${platformBtns || '<span style="font-size:0.73rem;color:var(--text-muted)">No links added</span>'}</div>`}
         ${linkedHtml ? `<div class="compat-row">${linkedHtml}</div>` : ''}
+        ${updatedHtml}
       </div>
       <div class="item-actions">
         ${bestPriceHtml}
@@ -683,7 +750,8 @@ function renderItemCard(item, bom) {
           <button class="qty-btn" data-id="${item.id}" data-delta="1">+</button>
         </div>
         <button class="item-edit-btn" data-id="${item.id}">Edit</button>
-        <button class="item-copy-btn" data-id="${item.id}" title="Copy to another BOM">⎘</button>
+        <button class="item-dup-btn" data-id="${item.id}" title="Duplicate">⊕</button>
+        <button class="item-copy-btn" data-id="${item.id}" title="Copy to BOM">⎘</button>
         <button class="item-del-btn" data-id="${item.id}">Del</button>
       </div>
     </div>`;
@@ -710,14 +778,16 @@ function renderItemTile(item, bom) {
   const typeMeta = item.componentType
     ? `<span class="type-badge" style="font-size:0.6rem;padding:1px 6px">${esc(item.componentType)}</span>`
     : '';
+  const unpricedTile = !getPrices(item).length && !bundle ? `<span class="unpriced-badge">⚠</span>` : '';
 
   return `
-    <div class="item-tile status-${status}">
+    <div class="item-tile status-${status}" data-item-id="${item.id}">
       <div class="item-tile-rect">
         <div class="item-tile-top-row">
           <div class="item-tile-img">${imgContent}</div>
           <div class="item-tile-actions">
             <button class="item-tile-btn edit item-edit-btn" data-id="${item.id}" title="Edit">✏</button>
+            <button class="item-tile-btn item-dup-btn" data-id="${item.id}" title="Duplicate">⊕</button>
             <button class="item-tile-btn copy item-copy-btn" data-id="${item.id}" title="Copy to BOM">⎘</button>
             <button class="item-tile-btn del item-del-btn" data-id="${item.id}" title="Delete">✕</button>
           </div>
@@ -733,6 +803,7 @@ function renderItemTile(item, bom) {
         <div class="item-tile-meta">
           ${typeMeta}
           ${priceHtml}
+          ${unpricedTile}
           <span class="status-badge status-${status}" style="font-size:0.58rem;padding:1px 6px">${STATUS_LABEL[status]}</span>
         </div>
       </div>
@@ -899,9 +970,13 @@ function openItemModal(existing = null) {
               <label>Item Name</label>
               <input type="text" id="item-name" placeholder="e.g. Raspberry Pi 4B" value="${esc(existing?.name || '')}">
             </div>
-            <div class="form-group" style="max-width:90px">
+            <div class="form-group" style="max-width:75px">
               <label>Qty</label>
               <input type="number" id="item-qty" min="1" value="${existing?.quantity || 1}">
+            </div>
+            <div class="form-group" style="max-width:75px">
+              <label>Stock</label>
+              <input type="number" id="item-stock" min="0" value="${existing?.stock || 0}">
             </div>
             <div class="form-group" style="max-width:140px">
               <label>Component Type</label>
@@ -939,6 +1014,7 @@ function openItemModal(existing = null) {
               <div class="form-group" style="max-width:90px"><label>Price</label><input type="number" id="amazon-price" step="0.01" min="0" value="${p.amazon?.price || ''}"></div>
               <div class="form-group" style="max-width:70px"><label>Currency</label><input type="text" id="amazon-currency" maxlength="5" value="${esc(p.amazon?.currency || '$')}"></div>
             </div>
+            <input type="text" id="amazon-notes" placeholder="Supplier notes…" style="font-size:0.78rem;margin-top:0" value="${esc(p.amazon?.notes || '')}">
           </div>
           <div class="platform-section">
             <div class="platform-section-title"><span class="platform-dot dot-lazada"></span> Lazada</div>
@@ -947,6 +1023,7 @@ function openItemModal(existing = null) {
               <div class="form-group" style="max-width:90px"><label>Price</label><input type="number" id="lazada-price" step="0.01" min="0" value="${p.lazada?.price || ''}"></div>
               <div class="form-group" style="max-width:70px"><label>Currency</label><input type="text" id="lazada-currency" maxlength="5" value="${esc(p.lazada?.currency || '$')}"></div>
             </div>
+            <input type="text" id="lazada-notes" placeholder="Supplier notes…" style="font-size:0.78rem;margin-top:0" value="${esc(p.lazada?.notes || '')}">
           </div>
           <div class="platform-section">
             <div class="platform-section-title"><span class="platform-dot dot-aliexpress"></span> AliExpress</div>
@@ -955,6 +1032,25 @@ function openItemModal(existing = null) {
               <div class="form-group" style="max-width:90px"><label>Price</label><input type="number" id="aliexpress-price" step="0.01" min="0" value="${p.aliexpress?.price || ''}"></div>
               <div class="form-group" style="max-width:70px"><label>Currency</label><input type="text" id="aliexpress-currency" maxlength="5" value="${esc(p.aliexpress?.currency || '$')}"></div>
             </div>
+            <input type="text" id="aliexpress-notes" placeholder="Supplier notes…" style="font-size:0.78rem;margin-top:0" value="${esc(p.aliexpress?.notes || '')}">
+          </div>
+          <div class="platform-section">
+            <div class="platform-section-title"><span class="platform-dot dot-ebay"></span> eBay</div>
+            <div class="form-row">
+              <div class="form-group"><label>Link</label><input type="url" id="ebay-url" placeholder="https://ebay.com/..." value="${esc(p.ebay?.url || '')}"></div>
+              <div class="form-group" style="max-width:90px"><label>Price</label><input type="number" id="ebay-price" step="0.01" min="0" value="${p.ebay?.price || ''}"></div>
+              <div class="form-group" style="max-width:70px"><label>Currency</label><input type="text" id="ebay-currency" maxlength="5" value="${esc(p.ebay?.currency || '$')}"></div>
+            </div>
+            <input type="text" id="ebay-notes" placeholder="Supplier notes…" style="font-size:0.78rem;margin-top:0" value="${esc(p.ebay?.notes || '')}">
+          </div>
+          <div class="platform-section">
+            <div class="platform-section-title"><span class="platform-dot dot-shopee"></span> Shopee</div>
+            <div class="form-row">
+              <div class="form-group"><label>Link</label><input type="url" id="shopee-url" placeholder="https://shopee.com/..." value="${esc(p.shopee?.url || '')}"></div>
+              <div class="form-group" style="max-width:90px"><label>Price</label><input type="number" id="shopee-price" step="0.01" min="0" value="${p.shopee?.price || ''}"></div>
+              <div class="form-group" style="max-width:70px"><label>Currency</label><input type="text" id="shopee-currency" maxlength="5" value="${esc(p.shopee?.currency || '$')}"></div>
+            </div>
+            <input type="text" id="shopee-notes" placeholder="Supplier notes…" style="font-size:0.78rem;margin-top:0" value="${esc(p.shopee?.notes || '')}">
           </div>
 
           <div class="modal-section-title" style="margin-top:16px">Linked / Dependent Parts</div>
@@ -1013,7 +1109,7 @@ function openItemModal(existing = null) {
 
     // Fill platform URL + price + currency
     const platform = result.platform;
-    if (platform && ['amazon','lazada','aliexpress'].includes(platform)) {
+    if (platform && ['amazon','lazada','aliexpress','ebay','shopee'].includes(platform)) {
       const urlEl      = document.getElementById(`${platform}-url`);
       const priceEl    = document.getElementById(`${platform}-price`);
       const currencyEl = document.getElementById(`${platform}-currency`);
@@ -1052,6 +1148,7 @@ function openItemModal(existing = null) {
     const item = existing || { id: uuid() };
     Object.assign(item, buildItemFromModal(item));
     item.name = name;
+    item.updatedAt = Date.now();
 
     const bom = getActiveBom();
     if (!isEdit) bom.items.push(item);
@@ -1081,18 +1178,22 @@ function buildItemFromModal(existing) {
 
   const linkedParts = [...document.querySelectorAll('input[name="linked"]:checked')].map(el => el.value);
 
+  const pf = (id, fb = '') => document.getElementById(id)?.value.trim() || fb;
   return {
     quantity: parseInt(document.getElementById('item-qty')?.value) || 1,
-    componentType: document.getElementById('item-type')?.value.trim() || '',
+    stock: parseInt(document.getElementById('item-stock')?.value) || 0,
+    componentType: pf('item-type'),
     status: document.getElementById('item-status')?.value || 'needed',
-    imageUrl: document.getElementById('item-img')?.value.trim() || '',
+    imageUrl: pf('item-img'),
     specs,
     specsNotes: document.getElementById('item-notes')?.value.trim() || '',
     linkedParts,
     platforms: {
-      amazon: { url: document.getElementById('amazon-url')?.value.trim() || '', price: document.getElementById('amazon-price')?.value || '', currency: document.getElementById('amazon-currency')?.value.trim() || '$' },
-      lazada: { url: document.getElementById('lazada-url')?.value.trim() || '', price: document.getElementById('lazada-price')?.value || '', currency: document.getElementById('lazada-currency')?.value.trim() || '$' },
-      aliexpress: { url: document.getElementById('aliexpress-url')?.value.trim() || '', price: document.getElementById('aliexpress-price')?.value || '', currency: document.getElementById('aliexpress-currency')?.value.trim() || '$' },
+      amazon:     { url: pf('amazon-url'),     price: pf('amazon-price'),     currency: pf('amazon-currency', '$'),     notes: pf('amazon-notes') },
+      lazada:     { url: pf('lazada-url'),     price: pf('lazada-price'),     currency: pf('lazada-currency', '$'),     notes: pf('lazada-notes') },
+      aliexpress: { url: pf('aliexpress-url'), price: pf('aliexpress-price'), currency: pf('aliexpress-currency', '$'), notes: pf('aliexpress-notes') },
+      ebay:       { url: pf('ebay-url'),       price: pf('ebay-price'),       currency: pf('ebay-currency', '$'),       notes: pf('ebay-notes') },
+      shopee:     { url: pf('shopee-url'),     price: pf('shopee-price'),     currency: pf('shopee-currency', '$'),     notes: pf('shopee-notes') },
     }
   };
 }
@@ -1248,6 +1349,8 @@ function detectPlatformFromUrl(url) {
     if (host.includes('amazon'))     return 'amazon';
     if (host.includes('lazada'))     return 'lazada';
     if (host.includes('aliexpress')) return 'aliexpress';
+    if (host.includes('ebay'))       return 'ebay';
+    if (host.includes('shopee'))     return 'shopee';
   } catch {}
   return null;
 }
@@ -1633,12 +1736,28 @@ function openDefineSpecFieldModal(callback) {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 function deleteItem(itemId) {
-  if (!confirm('Delete this item?')) return;
   const bom = getActiveBom();
-  bom.items = bom.items.filter(i => i.id !== itemId);
-  // Remove from other items' linkedParts
+  const item = bom.items.find(i => i.id === itemId);
+  if (!item) return;
+  const idx = bom.items.indexOf(item);
+  // Snapshot which other items linked to this one
+  const linkedFrom = bom.items
+    .filter(i => (i.linkedParts || []).includes(itemId))
+    .map(i => i.id);
+  bom.items.splice(idx, 1);
   bom.items.forEach(i => { i.linkedParts = (i.linkedParts || []).filter(id => id !== itemId); });
   saveData(data); renderAll();
+  showToastWithUndo(`Deleted "${item.name}"`, () => {
+    const cur = getActiveBom();
+    if (!cur) return;
+    cur.items.splice(idx, 0, item);
+    linkedFrom.forEach(oid => {
+      const other = cur.items.find(i => i.id === oid);
+      if (other && !(other.linkedParts || []).includes(itemId))
+        (other.linkedParts = other.linkedParts || []).push(itemId);
+    });
+    saveData(data); renderAll();
+  });
 }
 
 function deleteBom() {
@@ -1698,6 +1817,7 @@ function importFromCSV(rows) {
   const ci = name => header.findIndex(h => h.toLowerCase() === name.toLowerCase());
   const iName    = ci('name');
   const iQty     = ci('qty');
+  const iStock   = ci('stock');
   const iStatus  = ci('status');
   const iType    = ci('component type') >= 0 ? ci('component type') : ci('componenttype');
   const iNotes   = ci('notes');
@@ -1705,6 +1825,9 @@ function importFromCSV(rows) {
   const iAmazonUrl = ci('amazon url'), iAmazonPrice = ci('amazon price'), iAmazonCur = ci('amazon currency');
   const iLazUrl    = ci('lazada url'),  iLazPrice    = ci('lazada price'),  iLazCur    = ci('lazada currency');
   const iAliUrl    = ci('aliexpress url'), iAliPrice = ci('aliexpress price'), iAliCur = ci('aliexpress currency');
+  const iEbayUrl   = ci('ebay url'),   iEbayPrice   = ci('ebay price'),   iEbayCur   = ci('ebay currency');
+  const iShopeeUrl = ci('shopee url'), iShopeePrice = ci('shopee price'), iShopeeCur = ci('shopee currency');
+  const iUpdatedAt = ci('updated at');
   if (iName < 0) return null;
 
   // Detect spec field columns
@@ -1755,15 +1878,19 @@ function importFromCSV(rows) {
       id, name,
       componentType: iType >= 0 ? r[iType]?.trim() || '' : '',
       quantity: parseInt(r[iQty]) || 1,
+      stock: iStock >= 0 ? parseInt(r[iStock]) || 0 : 0,
       status,
       specsNotes: iNotes >= 0 ? r[iNotes]?.trim() || '' : '',
       imageUrl:   iImg   >= 0 ? r[iImg]?.trim()   || '' : '',
       specs,
       linkedParts: [],
+      updatedAt: iUpdatedAt >= 0 && r[iUpdatedAt] ? (new Date(r[iUpdatedAt]).getTime() || null) : null,
       platforms: {
-        amazon:     { url: r[iAmazonUrl]?.trim() || '', price: r[iAmazonPrice]?.trim() || '', currency: r[iAmazonCur]?.trim() || '$' },
-        lazada:     { url: r[iLazUrl]?.trim()    || '', price: r[iLazPrice]?.trim()    || '', currency: r[iLazCur]?.trim()    || '$' },
-        aliexpress: { url: r[iAliUrl]?.trim()    || '', price: r[iAliPrice]?.trim()    || '', currency: r[iAliCur]?.trim()    || '$' },
+        amazon:     { url: r[iAmazonUrl]?.trim()  || '', price: r[iAmazonPrice]?.trim()  || '', currency: r[iAmazonCur]?.trim()  || '$' },
+        lazada:     { url: r[iLazUrl]?.trim()     || '', price: r[iLazPrice]?.trim()     || '', currency: r[iLazCur]?.trim()     || '$' },
+        aliexpress: { url: r[iAliUrl]?.trim()     || '', price: r[iAliPrice]?.trim()     || '', currency: r[iAliCur]?.trim()     || '$' },
+        ebay:       { url: r[iEbayUrl]?.trim()    || '', price: r[iEbayPrice]?.trim()    || '', currency: r[iEbayCur]?.trim()    || '$' },
+        shopee:     { url: r[iShopeeUrl]?.trim()  || '', price: r[iShopeePrice]?.trim()  || '', currency: r[iShopeeCur]?.trim()  || '$' },
       },
     });
   }
@@ -1950,12 +2077,14 @@ function exportCSV() {
   // ── Items ──
   const specHeaders = data.specFields.map(f => `${f.name} (${f.unit || f.type})`);
   sections.push(row(['ITEMS']));
-  sections.push(row(['Name', 'Component Type', 'Qty', 'Status', 'Notes', 'Image URL',
+  sections.push(row(['Name', 'Component Type', 'Qty', 'Stock', 'Status', 'Notes', 'Image URL',
     ...specHeaders,
     'Amazon URL', 'Amazon Price', 'Amazon Currency',
     'Lazada URL', 'Lazada Price', 'Lazada Currency',
     'AliExpress URL', 'AliExpress Price', 'AliExpress Currency',
-    'Best Price', 'Linked Parts']));
+    'eBay URL', 'eBay Price', 'eBay Currency',
+    'Shopee URL', 'Shopee Price', 'Shopee Currency',
+    'Best Price', 'Linked Parts', 'Updated At']));
 
   for (const item of bom.items) {
     const prices = getPrices(item);
@@ -1964,15 +2093,18 @@ function exportCSV() {
     const specValues = data.specFields.map(f => formatSpec(item.specs?.[f.id], f));
     const linkedNames = (item.linkedParts || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
     sections.push(row([
-      item.name, item.componentType || '', item.quantity || 1,
+      item.name, item.componentType || '', item.quantity || 1, item.stock || 0,
       STATUS_LABEL[item.status || 'needed'] || item.status || '',
       item.specsNotes || '', item.imageUrl || '',
       ...specValues,
       p.amazon?.url || '', p.amazon?.price || '', p.amazon?.currency || '',
       p.lazada?.url || '', p.lazada?.price || '', p.lazada?.currency || '',
       p.aliexpress?.url || '', p.aliexpress?.price || '', p.aliexpress?.currency || '',
+      p.ebay?.url || '', p.ebay?.price || '', p.ebay?.currency || '',
+      p.shopee?.url || '', p.shopee?.price || '', p.shopee?.currency || '',
       cheapest ? `${cheapest.currency}${cheapest.price}` : '',
       linkedNames,
+      item.updatedAt ? new Date(item.updatedAt).toISOString() : '',
     ]));
   }
 
@@ -2001,9 +2133,34 @@ function downloadText(text, filename, type) {
 // ── Calc ──────────────────────────────────────────────────────────────────────
 
 function getPrices(item) {
-  return ['amazon', 'lazada', 'aliexpress']
+  return ['amazon', 'lazada', 'aliexpress', 'ebay', 'shopee']
     .map(p => { const d = item.platforms?.[p]; return d?.price && d?.url ? { platform: p, price: parseFloat(d.price), currency: d.currency || '$' } : null; })
     .filter(Boolean);
+}
+
+function formatRelTime(ts) {
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return d < 7 ? `${d}d ago` : new Date(ts).toLocaleDateString();
+}
+
+function duplicateItem(itemId) {
+  const bom = getActiveBom();
+  const item = bom.items.find(i => i.id === itemId);
+  if (!item) return;
+  const copy = JSON.parse(JSON.stringify(item));
+  copy.id = uuid();
+  copy.name = item.name + ' (copy)';
+  copy.linkedParts = [];
+  copy.updatedAt = Date.now();
+  bom.items.splice(bom.items.indexOf(item) + 1, 0, copy);
+  saveData(data);
+  renderItems();
+  showToast(`Duplicated "${item.name}"`);
 }
 
 function coveredByBundle(itemId, bom) {
@@ -2065,14 +2222,41 @@ function shareBom() {
     const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(bom));
     const url = `${location.origin}${location.pathname}#share=${compressed}`;
     navigator.clipboard.writeText(url).then(() => {
-      showToast('Share link copied to clipboard!');
+      showToast('Share link copied!');
     }).catch(() => {
-      // Fallback: show in a prompt so they can copy manually
       prompt('Copy this link:', url);
     });
+    openQRModal(url);
   } catch (e) {
     alert('Failed to generate share link.');
   }
+}
+
+function openQRModal(url) {
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`;
+  const html = `
+    <div class="modal-overlay" id="modal-overlay-qr">
+      <div class="modal" style="max-width:300px;text-align:center">
+        <div class="modal-header">
+          <h2>📲 Share QR Code</h2>
+          <button class="modal-close" id="qr-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <img class="qr-modal-img" src="${esc(qrSrc)}" width="200" height="200" alt="QR Code">
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px">Scan to open this BOM on another device.</p>
+          <p style="font-size:0.7rem;color:var(--text-muted);margin-top:4px">Link also copied to clipboard.</p>
+        </div>
+        <div class="modal-footer" style="justify-content:center">
+          <button class="header-btn primary" id="qr-done">Done</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('modal-overlay-qr');
+  const close = () => overlay.remove();
+  document.getElementById('qr-close').addEventListener('click', close);
+  document.getElementById('qr-done').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
 function checkShareParam() {
@@ -2135,6 +2319,23 @@ function showToast(msg) {
   setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3000);
 }
 
+function showToastWithUndo(msg, undoFn) {
+  const t = document.createElement('div');
+  t.className = 'toast toast-undo';
+  t.innerHTML = `${esc(msg)} <button class="toast-undo-btn">Undo</button>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add('toast-show'), 10);
+  let undone = false;
+  const timer = setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 5000);
+  t.querySelector('.toast-undo-btn').addEventListener('click', () => {
+    if (undone) return; undone = true;
+    clearTimeout(timer);
+    undoFn();
+    t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300);
+    showToast('Restored!');
+  });
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function renderAll() { updateTopbarBomName(); renderBomHeader(); }
@@ -2165,3 +2366,15 @@ if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
 checkShareParam();
 fetchRates();
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'Escape') {
+    const overlay = document.querySelector('.modal-overlay');
+    if (overlay) { overlay.remove(); return; }
+  }
+  if (document.querySelector('.modal-overlay')) return;
+  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (getActiveBom()) openItemModal(null); }
+  if (e.key === '/') { e.preventDefault(); const s = document.getElementById('item-search'); if (s) { s.focus(); s.select(); } }
+});
