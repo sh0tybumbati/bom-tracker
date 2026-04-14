@@ -1323,6 +1323,94 @@ textarea { resize: vertical; min-height: 70px; }
 }
 
 /* ── Print styles ── */
+/* ── Graph View ── */
+#graph-view {
+  width: 100%;
+  height: calc(100svh - 260px);
+  min-height: 480px;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg);
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 28px 28px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+#graph-view:active { cursor: grabbing; }
+
+#graph-world {
+  position: absolute;
+  top: 0; left: 0;
+  will-change: transform;
+}
+
+.graph-node {
+  position: absolute;
+  width: 110px;
+  height: 110px;
+  background: var(--bg-card);
+  border: 2px solid var(--border-hi);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  cursor: grab;
+  touch-action: none;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.graph-node:active { cursor: grabbing; }
+
+.graph-node.graph-selected {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 4px 16px rgba(0,0,0,0.35);
+}
+
+/* Status border accent — thin coloured stripe at bottom */
+.graph-node.graph-status-needed  { border-bottom-color: #f87171; border-bottom-width: 3px; }
+.graph-node.graph-status-ordered { border-bottom-color: #facc15; border-bottom-width: 3px; }
+.graph-node.graph-status-received{ border-bottom-color: #4ade80; border-bottom-width: 3px; }
+
+.graph-node-img {
+  width: 100%;
+  height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 10px 10px 0 0;
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.graph-node-img img {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.graph-node-emoji { font-size: 1.8rem; line-height: 1; }
+
+.graph-node-name {
+  font-size: 0.58rem;
+  font-weight: 600;
+  text-align: center;
+  padding: 3px 5px 2px;
+  line-height: 1.25;
+  width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--text);
+}
+
+.graph-node-badge {
+  position: absolute;
+  top: 3px; right: 4px;
+  font-size: 0.65rem;
+  line-height: 1;
+}
+
 @media print {
   #topbar, #bom-header, #filter-bar, #items-toolbar,
   .item-actions, .item-tile-actions, .item-tile-qty-strip,

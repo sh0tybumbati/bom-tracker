@@ -129,17 +129,17 @@ function toDisplay(amount, fromCurrency) {
 const STORAGE_KEY = 'bom-tracker-data';
 
 const DEFAULT_SPEC_FIELDS = [
-  { id: 'voltage',     name: 'Voltage',       unit: 'V',   type: 'range' },
-  { id: 'current',     name: 'Current',       unit: 'A',   type: 'range' },
-  { id: 'wattage',     name: 'Wattage',       unit: 'W',   type: 'value' },
-  { id: 'capacity',    name: 'Capacity',      unit: 'Ah',  type: 'value' },
-  { id: 'weight',      name: 'Weight',        unit: 'g',   type: 'value' },
-  { id: 'frequency',   name: 'Frequency',     unit: 'Hz',  type: 'range' },
-  { id: 'temperature', name: 'Temp. Range',   unit: '°C',  type: 'range' },
-  { id: 'resistance',  name: 'Resistance',    unit: 'Ω',   type: 'range' },
-  { id: 'dimensions',  name: 'Dimensions',    unit: 'mm',  type: 'text'  },
-  { id: 'connector',   name: 'Connector',     unit: '',    type: 'text'  },
-  { id: 'protocol',    name: 'Protocol',      unit: '',    type: 'text'  },
+  { id: 'voltage',     name: 'Voltage',       unit: 'V',   type: 'range', directional: true  },
+  { id: 'current',     name: 'Current',       unit: 'A',   type: 'range', directional: true  },
+  { id: 'wattage',     name: 'Wattage',       unit: 'W',   type: 'value', directional: true  },
+  { id: 'capacity',    name: 'Capacity',      unit: 'Ah',  type: 'value', directional: true  },
+  { id: 'weight',      name: 'Weight',        unit: 'g',   type: 'value', directional: false },
+  { id: 'frequency',   name: 'Frequency',     unit: 'Hz',  type: 'range', directional: false },
+  { id: 'temperature', name: 'Temp. Range',   unit: '°C',  type: 'range', directional: false },
+  { id: 'resistance',  name: 'Resistance',    unit: 'Ω',   type: 'range', directional: false },
+  { id: 'dimensions',  name: 'Dimensions',    unit: 'mm',  type: 'text',  directional: false },
+  { id: 'connector',   name: 'Connector',     unit: '',    type: 'text',  directional: false },
+  { id: 'protocol',    name: 'Protocol',      unit: '',    type: 'text',  directional: false },
 ];
 
 function loadData() {
@@ -147,6 +147,13 @@ function loadData() {
     const d = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
     if (!d.boms) d.boms = [];
     if (!d.specFields) d.specFields = [...DEFAULT_SPEC_FIELDS];
+    // Migrate: add directional flag to existing spec fields that lack it
+    const DIRECTIONAL_IDS = new Set(['voltage', 'current', 'wattage', 'capacity']);
+    const DIRECTIONAL_UNITS = new Set(['v', 'a', 'w', 'ah']);
+    d.specFields.forEach(f => {
+      if (f.directional === undefined)
+        f.directional = DIRECTIONAL_IDS.has(f.id) || DIRECTIONAL_UNITS.has((f.unit || '').toLowerCase().trim());
+    });
     // Migrate: if item.specs is a plain string, move to specsNotes
     d.boms.forEach(bom => {
       if (!bom.bundles) bom.bundles = [];
@@ -310,35 +317,32 @@ function checkSupplyCompat(supplySpec, consumerSpec, field) {
 
 function checkItemCompat(itemA, itemB) {
   return data.specFields.map(field => {
-    const aIn  = itemA.inputSpecs?.[field.id];
-    const aOut = itemA.outputSpecs?.[field.id];
-    const bIn  = itemB.inputSpecs?.[field.id];
-    const bOut = itemB.outputSpecs?.[field.id];
     const hv = (s) => hasSpecValue(s, field);
 
-    // A's output feeds B's input → directional supply check
-    if (hv(aOut) && hv(bIn))
-      return { field, status: checkSupplyCompat(aOut, bIn, field), dir: 'a→b' };
-
-    // B's output feeds A's input → directional supply check
-    if (hv(bOut) && hv(aIn))
-      return { field, status: checkSupplyCompat(bOut, aIn, field), dir: 'b→a' };
-
-    // Both have input specs only → symmetric requirement match
-    if (hv(aIn) && hv(bIn))
-      return { field, status: checkSpecCompat(aIn, bIn, field), dir: 'sym' };
-
-    // Both have output specs only → symmetric capability match
-    if (hv(aOut) && hv(bOut))
-      return { field, status: checkSpecCompat(aOut, bOut, field), dir: 'sym' };
-
-    // Legacy fallback: old item.specs with isSupply flag
-    const sA = itemA.specs?.[field.id], sB = itemB.specs?.[field.id];
-    if (!hv(sA) || !hv(sB)) return null;
-    const aS = !!itemA.isSupply, bS = !!itemB.isSupply;
-    if (aS && !bS) return { field, status: checkSupplyCompat(sA, sB, field), dir: 'a→b' };
-    if (!aS && bS) return { field, status: checkSupplyCompat(sB, sA, field), dir: 'b→a' };
-    return { field, status: checkSpecCompat(sA, sB, field), dir: 'sym' };
+    if (field.directional) {
+      // Directional (electrical): check inputSpecs vs outputSpecs
+      const aIn  = itemA.inputSpecs?.[field.id];
+      const aOut = itemA.outputSpecs?.[field.id];
+      const bIn  = itemB.inputSpecs?.[field.id];
+      const bOut = itemB.outputSpecs?.[field.id];
+      if (hv(aOut) && hv(bIn)) return { field, status: checkSupplyCompat(aOut, bIn, field), dir: 'a→b' };
+      if (hv(bOut) && hv(aIn)) return { field, status: checkSupplyCompat(bOut, aIn, field), dir: 'b→a' };
+      if (hv(aIn) && hv(bIn))  return { field, status: checkSpecCompat(aIn, bIn, field), dir: 'sym' };
+      if (hv(aOut) && hv(bOut)) return { field, status: checkSpecCompat(aOut, bOut, field), dir: 'sym' };
+      // Legacy fallback for directional: old item.specs with isSupply flag
+      const sA = itemA.specs?.[field.id], sB = itemB.specs?.[field.id];
+      if (!hv(sA) || !hv(sB)) return null;
+      const aS = !!itemA.isSupply, bS = !!itemB.isSupply;
+      if (aS && !bS) return { field, status: checkSupplyCompat(sA, sB, field), dir: 'a→b' };
+      if (!aS && bS) return { field, status: checkSupplyCompat(sB, sA, field), dir: 'b→a' };
+      return { field, status: checkSpecCompat(sA, sB, field), dir: 'sym' };
+    } else {
+      // Non-directional: always symmetric; check item.specs (with fallback to inputSpecs/outputSpecs for migrated data)
+      const sA = itemA.specs?.[field.id] || itemA.inputSpecs?.[field.id] || itemA.outputSpecs?.[field.id];
+      const sB = itemB.specs?.[field.id] || itemB.inputSpecs?.[field.id] || itemB.outputSpecs?.[field.id];
+      if (!hv(sA) || !hv(sB)) return null;
+      return { field, status: checkSpecCompat(sA, sB, field), dir: 'sym' };
+    }
   }).filter(Boolean);
 }
 
@@ -509,7 +513,7 @@ function renderBomHeader() {
         <option value="price" ${filterState.sort==='price'?'selected':''}>Price: low–high</option>
         <option value="status" ${filterState.sort==='status'?'selected':''}>Status</option>
       </select>
-      <button id="view-toggle-btn" class="${viewMode === 'tile' ? 'active' : ''}" title="${viewMode === 'tile' ? 'List view' : 'Tile view'}">${viewMode === 'tile' ? '≡ List' : '⊞ Tiles'}</button>
+      <button id="view-toggle-btn" class="${viewMode !== 'list' ? 'active' : ''}" title="Switch view">${viewMode === 'list' ? '⊞ Tiles' : viewMode === 'tile' ? '⬡ Graph' : '≡ List'}</button>
       <span id="toolbar-total">${total}</span>
     </div>
     <div id="items-area"></div>`;
@@ -534,12 +538,11 @@ function renderBomHeader() {
   });
 
   document.getElementById('view-toggle-btn').addEventListener('click', () => {
-    viewMode = viewMode === 'tile' ? 'list' : 'tile';
+    viewMode = viewMode === 'list' ? 'tile' : viewMode === 'tile' ? 'graph' : 'list';
     localStorage.setItem('bom-view-mode', viewMode);
     const btn = document.getElementById('view-toggle-btn');
-    btn.textContent = viewMode === 'tile' ? '≡ List' : '⊞ Tiles';
-    btn.title = viewMode === 'tile' ? 'List view' : 'Tile view';
-    btn.classList.toggle('active', viewMode === 'tile');
+    btn.textContent = viewMode === 'list' ? '⊞ Tiles' : viewMode === 'tile' ? '⬡ Graph' : '≡ List';
+    btn.classList.toggle('active', viewMode !== 'list');
     renderItems();
   });
 
@@ -591,6 +594,11 @@ function renderItems() {
   }
 
   area.classList.toggle('tile-view', viewMode === 'tile');
+
+  if (viewMode === 'graph') {
+    renderGraphView(bom);
+    return;
+  }
 
   if (sort === 'status' && viewMode === 'list') {
     const groupOrder = ['received', 'ordered', 'needed'];
@@ -983,7 +991,7 @@ function openItemModal(existing = null) {
   const bom = getActiveBom();
   const otherItems = bom.items.filter(i => i.id !== existing?.id);
 
-  const makeSpecInputs = (section, existingSpecs) => data.specFields.map(f => {
+  const makeSpecInputs = (section, existingSpecs, fields) => (fields || data.specFields).map(f => {
     const s = existingSpecs?.[f.id] || {};
     const si = (key, extra = '') =>
       `<input type="number" class="spec-input" data-section="${section}" data-field="${f.id}" data-key="${key}" ${extra}>`;
@@ -1004,6 +1012,8 @@ function openItemModal(existing = null) {
       <div class="spec-field-row">
         <span class="spec-field-label">${esc(f.name)}</span>${st()}</div>`;
   }).join('');
+  const dirFields = data.specFields.filter(f => f.directional);
+  const genFields = data.specFields.filter(f => !f.directional);
 
   const linkedIds = new Set(existing?.linkedParts || []);
   const linkedCheckboxes = otherItems.length
@@ -1068,16 +1078,20 @@ function openItemModal(existing = null) {
             <img id="img-preview" class="img-preview" src="${esc(existing?.imageUrl || '')}" alt="" style="${existing?.imageUrl ? 'display:block' : 'display:none'}">
           </div>
 
+          ${dirFields.length ? `
           <div class="spec-io-grid">
             <div class="spec-io-col">
               <div class="modal-section-title spec-in-title">📥 Input <span class="spec-io-hint">what it needs</span></div>
-              <div id="spec-fields-in">${makeSpecInputs('in', existing?.inputSpecs)}</div>
+              <div id="spec-fields-in">${makeSpecInputs('in', existing?.inputSpecs, dirFields)}</div>
             </div>
             <div class="spec-io-col">
               <div class="modal-section-title spec-out-title">📤 Output <span class="spec-io-hint">what it provides</span></div>
-              <div id="spec-fields-out">${makeSpecInputs('out', existing?.outputSpecs)}</div>
+              <div id="spec-fields-out">${makeSpecInputs('out', existing?.outputSpecs, dirFields)}</div>
             </div>
-          </div>
+          </div>` : ''}
+          ${genFields.length ? `
+          <div class="modal-section-title" style="margin-top:12px">Specifications</div>
+          <div id="spec-fields-gen">${makeSpecInputs('gen', existing?.specs, genFields)}</div>` : ''}
           <button class="header-btn" id="add-spec-field-btn" style="margin-top:8px;font-size:0.75rem">+ Define new spec field</button>
 
           <div class="form-group" style="margin-top:14px">
@@ -1244,12 +1258,12 @@ function openItemModal(existing = null) {
 }
 
 function buildItemFromModal(existing) {
-  const inputSpecs = {}, outputSpecs = {};
+  const inputSpecs = {}, outputSpecs = {}, specs = {};
   document.querySelectorAll('.spec-input').forEach(input => {
     const section = input.dataset.section, fid = input.dataset.field, key = input.dataset.key;
     const val = input.value.trim();
     if (!val) return;
-    const target = section === 'out' ? outputSpecs : inputSpecs;
+    const target = section === 'out' ? outputSpecs : section === 'gen' ? specs : inputSpecs;
     if (!target[fid]) target[fid] = {};
     target[fid][key] = key === 'text' ? val : parseFloat(val);
   });
@@ -1264,8 +1278,7 @@ function buildItemFromModal(existing) {
     status: document.getElementById('item-status')?.value || 'needed',
     isSupply: !!(document.getElementById('item-is-supply')?.checked),
     imageUrl: pf('item-img'),
-    inputSpecs, outputSpecs,
-    specs: existing?.specs || {}, // preserve legacy field for backward compat
+    inputSpecs, outputSpecs, specs,
     specsNotes: document.getElementById('item-notes')?.value.trim() || '',
     linkedParts,
     platforms: {
@@ -1697,7 +1710,7 @@ function openSpecFieldsModal() {
   const renderList = () => data.specFields.map((f, i) => `
     <div class="spec-mgr-row">
       <span class="spec-mgr-name">${esc(f.name)}</span>
-      <span class="spec-mgr-meta">${f.unit || '—'} · ${f.type}</span>
+      <span class="spec-mgr-meta">${f.unit || '—'} · ${f.type}${f.directional ? ' · ⚡ in/out' : ''}</span>
       <button class="item-del-btn spec-del-btn" data-idx="${i}" style="margin-left:auto">Del</button>
     </div>`).join('');
 
@@ -1723,6 +1736,9 @@ function openSpecFieldsModal() {
                 <option value="range">range</option>
                 <option value="text">text</option>
               </select>
+            </div>
+            <div class="form-group" style="flex:none;align-self:flex-end;padding-bottom:2px">
+              <label class="supply-checkbox-label"><input type="checkbox" id="new-field-directional"> ⚡ In/Out</label>
             </div>
           </div>
           <button class="header-btn primary" id="add-field-btn" style="margin-top:4px">+ Add Field</button>
@@ -1761,6 +1777,7 @@ function openSpecFieldsModal() {
       name,
       unit: document.getElementById('new-field-unit').value.trim(),
       type: document.getElementById('new-field-type').value,
+      directional: !!(document.getElementById('new-field-directional')?.checked),
     });
     saveData(data);
     document.getElementById('new-field-name').value = '';
@@ -1781,6 +1798,9 @@ function openDefineSpecFieldModal(callback) {
             <div class="form-group" style="max-width:80px"><label>Unit</label><input type="text" id="inner-field-unit" placeholder="Nm"></div>
             <div class="form-group" style="max-width:110px"><label>Type</label>
               <select id="inner-field-type"><option value="value">value</option><option value="range">range</option><option value="text">text</option></select>
+            </div>
+            <div class="form-group" style="flex:none;align-self:flex-end;padding-bottom:2px">
+              <label class="supply-checkbox-label"><input type="checkbox" id="inner-field-directional"> ⚡ In/Out</label>
             </div>
           </div>
         </div>
@@ -1805,6 +1825,7 @@ function openDefineSpecFieldModal(callback) {
         name,
         unit: document.getElementById('inner-field-unit').value.trim(),
         type: document.getElementById('inner-field-type').value,
+        directional: !!(document.getElementById('inner-field-directional')?.checked),
       });
       saveData(data);
     }
@@ -1911,15 +1932,20 @@ function importFromCSV(rows) {
   const iUpdatedAt = ci('updated at');
   if (iName < 0) return null;
 
-  // Detect spec field columns — new format has "Name in (unit)" / "Name out (unit)", legacy has "Name (unit)"
+  // Detect spec field columns — directional: "Name in (unit)" / "Name out (unit)"; non-directional: "Name (unit)"
   const specColMap = [];
   data.specFields.forEach(f => {
     const nameLo = f.name.toLowerCase();
-    const inIdx  = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' in'));
-    const outIdx = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' out'));
-    const legIdx = (inIdx < 0 && outIdx < 0)
-      ? header.findIndex(h => h.toLowerCase().startsWith(nameLo)) : -1;
-    specColMap.push({ field: f, inIdx, outIdx, legIdx });
+    if (f.directional) {
+      const inIdx  = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' in'));
+      const outIdx = header.findIndex(h => h.toLowerCase().startsWith(nameLo + ' out'));
+      const legIdx = (inIdx < 0 && outIdx < 0)
+        ? header.findIndex(h => h.toLowerCase().startsWith(nameLo)) : -1;
+      specColMap.push({ field: f, inIdx, outIdx, legIdx, isDirectional: true });
+    } else {
+      const genIdx = header.findIndex(h => h.toLowerCase().startsWith(nameLo));
+      specColMap.push({ field: f, inIdx: -1, outIdx: -1, legIdx: genIdx, isDirectional: false });
+    }
   });
 
   // Find end of items section
@@ -1947,14 +1973,20 @@ function importFromCSV(rows) {
       }
       return null;
     };
-    const inputSpecs = {}, outputSpecs = {}, legacySpecs = {};
-    specColMap.forEach(({ field, inIdx, outIdx, legIdx }) => {
+    const inputSpecs = {}, outputSpecs = {}, specs = {}, legacySpecs = {};
+    const isSupplyCsv = iIsSupply >= 0 ? /^yes$/i.test(r[iIsSupply]?.trim()) : false;
+    specColMap.forEach(({ field, inIdx, outIdx, legIdx, isDirectional }) => {
       if (inIdx  >= 0) { const v = parseSpecVal(r[inIdx]?.trim(),  field); if (v) inputSpecs[field.id]  = v; }
       if (outIdx >= 0) { const v = parseSpecVal(r[outIdx]?.trim(), field); if (v) outputSpecs[field.id] = v; }
-      if (legIdx >= 0) { const v = parseSpecVal(r[legIdx]?.trim(), field); if (v) legacySpecs[field.id] = v; }
+      if (legIdx >= 0) {
+        const v = parseSpecVal(r[legIdx]?.trim(), field);
+        if (v) {
+          if (isDirectional) legacySpecs[field.id] = v; // directional legacy → distribute below
+          else               specs[field.id] = v;        // non-directional → flat specs
+        }
+      }
     });
-    // If only legacy columns exist, distribute by isSupply flag (detected from csv)
-    const isSupplyCsv = iIsSupply >= 0 ? /^yes$/i.test(r[iIsSupply]?.trim()) : false;
+    // If only legacy directional columns exist, distribute by isSupply flag
     if (Object.keys(legacySpecs).length) {
       if (isSupplyCsv) Object.assign(outputSpecs, legacySpecs);
       else             Object.assign(inputSpecs, legacySpecs);
@@ -1976,7 +2008,7 @@ function importFromCSV(rows) {
       status,
       specsNotes: iNotes >= 0 ? r[iNotes]?.trim() || '' : '',
       imageUrl:   iImg   >= 0 ? r[iImg]?.trim()   || '' : '',
-      specs: {}, inputSpecs, outputSpecs,
+      specs, inputSpecs, outputSpecs,
       linkedParts: [],
       updatedAt: iUpdatedAt >= 0 && r[iUpdatedAt] ? (new Date(r[iUpdatedAt]).getTime() || null) : null,
       platforms: {
@@ -2169,11 +2201,14 @@ function exportCSV() {
   const sections = [];
 
   // ── Items ──
-  const specInHeaders  = data.specFields.map(f => `${f.name} in (${f.unit || f.type})`);
-  const specOutHeaders = data.specFields.map(f => `${f.name} out (${f.unit || f.type})`);
+  const csvDirFields = data.specFields.filter(f => f.directional);
+  const csvGenFields = data.specFields.filter(f => !f.directional);
+  const specInHeaders  = csvDirFields.map(f => `${f.name} in (${f.unit || f.type})`);
+  const specOutHeaders = csvDirFields.map(f => `${f.name} out (${f.unit || f.type})`);
+  const specGenHeaders = csvGenFields.map(f => `${f.name} (${f.unit || f.type})`);
   sections.push(row(['ITEMS']));
   sections.push(row(['Name', 'Component Type', 'Qty', 'Stock', 'Is Supply', 'Status', 'Notes', 'Image URL',
-    ...specInHeaders, ...specOutHeaders,
+    ...specInHeaders, ...specOutHeaders, ...specGenHeaders,
     'Amazon URL', 'Amazon Price', 'Amazon Currency',
     'Lazada URL', 'Lazada Price', 'Lazada Currency',
     'AliExpress URL', 'AliExpress Price', 'AliExpress Currency',
@@ -2185,15 +2220,16 @@ function exportCSV() {
     const prices = getPrices(item);
     const cheapest = prices.length ? prices.reduce((a, b) => a.price < b.price ? a : b) : null;
     const p = item.platforms || {};
-    const specInValues  = data.specFields.map(f => formatSpec((item.inputSpecs || item.specs)?.[f.id], f));
-    const specOutValues = data.specFields.map(f => formatSpec(item.outputSpecs?.[f.id], f));
+    const specInValues  = csvDirFields.map(f => formatSpec((item.inputSpecs || item.specs)?.[f.id], f));
+    const specOutValues = csvDirFields.map(f => formatSpec(item.outputSpecs?.[f.id], f));
+    const specGenValues = csvGenFields.map(f => formatSpec((item.specs || item.inputSpecs)?.[f.id], f));
     const linkedNames = (item.linkedParts || []).map(id => bom.items.find(i => i.id === id)?.name || '').filter(Boolean).join('; ');
     sections.push(row([
       item.name, item.componentType || '', item.quantity || 1, item.stock || 0,
       item.isSupply ? 'yes' : '',
       STATUS_LABEL[item.status || 'needed'] || item.status || '',
       item.specsNotes || '', item.imageUrl || '',
-      ...specInValues, ...specOutValues,
+      ...specInValues, ...specOutValues, ...specGenValues,
       p.amazon?.url || '', p.amazon?.price || '', p.amazon?.currency || '',
       p.lazada?.url || '', p.lazada?.price || '', p.lazada?.currency || '',
       p.aliexpress?.url || '', p.aliexpress?.price || '', p.aliexpress?.currency || '',
@@ -2463,6 +2499,158 @@ if (data.boms.length > 0) activeBomId = data.boms[0].id;
 renderAll();
 checkShareParam();
 fetchRates();
+
+// ── Graph View ────────────────────────────────────────────────────────────────
+
+const GRAPH_NODE_W = 110, GRAPH_NODE_H = 110;
+
+function renderGraphView(bom) {
+  const area = document.getElementById('items-area');
+  area.classList.remove('tile-view');
+
+  // Assign default grid positions for items that don't have one yet
+  const COLS = Math.max(1, Math.ceil(Math.sqrt(bom.items.length)));
+  const SPACING_X = 160, SPACING_Y = 160;
+  bom.items.forEach((item, i) => {
+    if (!item.graphPos) {
+      item.graphPos = {
+        x: (i % COLS) * SPACING_X + 40,
+        y: Math.floor(i / COLS) * SPACING_Y + 40,
+      };
+    }
+  });
+  if (!bom.graphPan) bom.graphPan = { x: 20, y: 20 };
+
+  const nodesHtml = bom.items.map(item => {
+    const s = item.status || 'needed';
+    const imgHtml = item.imageUrl
+      ? `<img src="${esc(item.imageUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      : `<span class="graph-node-emoji">📦</span>`;
+    return `<div class="graph-node graph-status-${s}" data-node-id="${item.id}"
+        style="left:${item.graphPos.x}px;top:${item.graphPos.y}px;touch-action:none">
+      <div class="graph-node-img">${imgHtml}</div>
+      <div class="graph-node-name">${esc(item.name)}</div>
+      ${item.isSupply ? `<span class="graph-node-badge">⚡</span>` : ''}
+    </div>`;
+  }).join('');
+
+  area.innerHTML = `
+    <div id="graph-view">
+      <div id="graph-world" style="transform:translate(${bom.graphPan.x}px,${bom.graphPan.y}px)">
+        <svg id="graph-lines" style="position:absolute;top:0;left:0;pointer-events:none;overflow:visible"></svg>
+        ${nodesHtml}
+      </div>
+    </div>`;
+
+  drawGraphLines(bom);
+  setupGraphInteractions(bom);
+}
+
+function drawGraphLines(bom) {
+  const svg = document.getElementById('graph-lines');
+  if (!svg) return;
+  const hw = GRAPH_NODE_W / 2, hh = GRAPH_NODE_H / 2;
+  const drawn = new Set();
+  let svgContent = '';
+
+  bom.items.forEach(item => {
+    (item.linkedParts || []).forEach(linkedId => {
+      const key = [item.id, linkedId].sort().join('|');
+      if (drawn.has(key)) return;
+      drawn.add(key);
+      const a = item.graphPos;
+      const bItem = bom.items.find(i => i.id === linkedId);
+      if (!a || !bItem?.graphPos) return;
+      const b = bItem.graphPos;
+      const results = checkItemCompat(item, bItem);
+      const cs = overallStatus(results);
+      const color = cs === 'ok' ? '#4ade80' : cs === 'warn' ? '#facc15' : cs === 'mismatch' ? '#f87171' : '#555';
+      const dash = cs === 'unknown' ? 'stroke-dasharray="7 4"' : '';
+      svgContent += `<line x1="${a.x + hw}" y1="${a.y + hh}" x2="${b.x + hw}" y2="${b.y + hh}"
+        stroke="${color}" stroke-width="2.5" stroke-linecap="round" opacity="0.85" ${dash}/>`;
+    });
+  });
+
+  svg.innerHTML = svgContent;
+}
+
+function setupGraphInteractions(bom) {
+  const view = document.getElementById('graph-view');
+  const world = document.getElementById('graph-world');
+  if (!view || !world) return;
+
+  let selected = new Set();
+  let dragState = null;  // { startX, startY, startPositions }
+  let panState  = null;  // { startX, startY, startPan }
+
+  function applySelectionStyle() {
+    world.querySelectorAll('.graph-node').forEach(el =>
+      el.classList.toggle('graph-selected', selected.has(el.dataset.nodeId))
+    );
+  }
+
+  view.addEventListener('pointerdown', e => {
+    const node = e.target.closest('.graph-node');
+
+    if (node) {
+      const id = node.dataset.nodeId;
+      if (e.shiftKey) {
+        if (selected.has(id)) selected.delete(id);
+        else selected.add(id);
+      } else {
+        if (!selected.has(id)) { selected.clear(); selected.add(id); }
+      }
+      applySelectionStyle();
+
+      // Start drag — record starting positions of all selected nodes
+      const startPositions = {};
+      selected.forEach(sid => {
+        const item = bom.items.find(i => i.id === sid);
+        if (item?.graphPos) startPositions[sid] = { ...item.graphPos };
+      });
+      dragState = { startX: e.clientX, startY: e.clientY, startPositions };
+      view.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    } else {
+      // Start pan
+      selected.clear();
+      applySelectionStyle();
+      panState = { startX: e.clientX, startY: e.clientY, startPan: { ...bom.graphPan } };
+      view.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    }
+  });
+
+  view.addEventListener('pointermove', e => {
+    if (dragState) {
+      const dx = e.clientX - dragState.startX;
+      const dy = e.clientY - dragState.startY;
+      selected.forEach(sid => {
+        const item = bom.items.find(i => i.id === sid);
+        const start = dragState.startPositions[sid];
+        if (!item || !start) return;
+        item.graphPos = { x: Math.max(0, start.x + dx), y: Math.max(0, start.y + dy) };
+        const el = world.querySelector(`.graph-node[data-node-id="${sid}"]`);
+        if (el) { el.style.left = item.graphPos.x + 'px'; el.style.top = item.graphPos.y + 'px'; }
+      });
+      drawGraphLines(bom);
+    } else if (panState) {
+      bom.graphPan = {
+        x: panState.startPan.x + (e.clientX - panState.startX),
+        y: panState.startPan.y + (e.clientY - panState.startY),
+      };
+      world.style.transform = `translate(${bom.graphPan.x}px,${bom.graphPan.y}px)`;
+    }
+  });
+
+  view.addEventListener('pointerup', () => {
+    if (dragState || panState) saveData(data);
+    dragState = null;
+    panState  = null;
+  });
+
+  view.addEventListener('pointercancel', () => { dragState = null; panState = null; });
+}
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
