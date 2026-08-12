@@ -26,6 +26,23 @@
   --card-glow: 0 0 0 1px var(--accent), 0 4px 24px var(--accent-glow);
 }
 
+[data-theme="light"] {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface2: #f1f5f9;
+  --surface3: #e2e8f0;
+  --border: #cbd5e1;
+  --border-hi: #94a3b8;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --accent: #6366f1;
+  --accent2: #8b5cf6;
+  --accent-dim: #6366f118;
+  --accent-glow: #6366f133;
+  --shadow: 0 4px 12px #00000015;
+  --shadow-lg: 0 8px 24px #00000022;
+}
+
 body {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
@@ -1426,4 +1443,45 @@ textarea { resize: vertical; min-height: 70px; }
   .spec-chip { border: 1px solid #ccc !important; background: #f5f5f5 !important; color: #333 !important; }
   .status-badge { border: 1px solid #999 !important; color: #333 !important; background: #eee !important; }
   #items-area { display: block !important; }
+}
+
+/* ── Progress Bar ── */
+.bom-progress {
+  width: 100%;
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 4px;
+  margin-top: 10px;
+  display: flex;
+  overflow: hidden;
+}
+.bom-progress-received { background: var(--green); }
+.bom-progress-ordered { background: var(--amber); }
+
+/* ── Responsive Action Header ── */
+.more-actions-menu { display: none; }
+
+@media (max-width: 768px) {
+  .secondary-action { display: none; }
+  .more-actions-btn { display: inline-flex; }
+  
+  .more-actions-menu.active {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    right: 20px;
+    top: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    box-shadow: var(--shadow-lg);
+    z-index: 1000;
+  }
+  .more-actions-menu.active .header-btn {
+    display: flex;
+    width: 100%;
+    text-align: left;
+    margin-bottom: 4px;
+  }
 }
